@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "know-when-you-dont"
+version = "0.1.0"
+description = "Task-family authoring repo for the Know When You Don't Kaggle benchmark."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic>=2.8,<3",
+  "pyyaml>=6.0,<7",
+  "pandas>=2.2,<3",
+  "jinja2>=3.1,<4",
+  "nbformat>=5.10,<6",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+

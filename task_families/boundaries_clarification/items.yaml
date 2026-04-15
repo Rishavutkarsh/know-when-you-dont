@@ -1,0 +1,157 @@
+items:
+  - item_id: bc_001
+    subtype: ambiguity
+    prompt: "Alex gave Jordan the book after they finished reading it. Who finished reading the book?"
+    expected_action: clarify
+    accepted_diagnoses: ["ambiguous", "pronoun ambiguity"]
+    difficulty: easy
+    notes: "Pronoun reference is ambiguous."
+
+  - item_id: bc_002
+    subtype: ambiguity
+    prompt: "Please send the draft to the manager after they approve it. Who approves the draft?"
+    expected_action: clarify
+    accepted_diagnoses: ["ambiguous", "referent ambiguity"]
+    difficulty: medium
+    notes: "Approval actor is not uniquely specified."
+
+  - item_id: bc_003
+    subtype: ambiguity
+    prompt: "What is the capital of Springfield?"
+    expected_action: clarify
+    accepted_diagnoses: ["underspecified", "ambiguous"]
+    difficulty: easy
+    notes: "Multiple Springfields exist."
+
+  - item_id: bc_004
+    subtype: ambiguity
+    prompt: "Call Sam when they arrive and ask if they brought the package. Who brought the package?"
+    expected_action: clarify
+    accepted_diagnoses: ["ambiguous", "pronoun ambiguity"]
+    difficulty: medium
+    notes: "Unclear whether Sam or another person brought it."
+
+  - item_id: bc_005
+    subtype: ambiguity
+    prompt: "The lawyer spoke to the witness before she entered the courtroom. Who entered the courtroom?"
+    expected_action: clarify
+    accepted_diagnoses: ["ambiguous", "pronoun ambiguity"]
+    difficulty: medium
+    notes: "Classic ambiguous pronoun example."
+
+  - item_id: bc_006
+    subtype: ambiguity
+    prompt: "Please place the small vase next to the blue box on the shelf above it. Which object is above which?"
+    expected_action: clarify
+    accepted_diagnoses: ["ambiguous", "spatial ambiguity"]
+    difficulty: hard
+    notes: "Spatial reference is not uniquely recoverable."
+
+  - item_id: bc_007
+    subtype: missing_information
+    prompt: "A rectangle has perimeter 20. What is its area?"
+    expected_action: abstain
+    required_missing_fields: ["side length", "width", "length"]
+    accepted_diagnoses: ["missing information", "insufficient information"]
+    difficulty: easy
+    notes: "Perimeter alone is insufficient."
+
+  - item_id: bc_008
+    subtype: missing_information
+    prompt: "Maya is taller than Priya. How tall is Maya?"
+    expected_action: abstain
+    required_missing_fields: ["height", "measurement", "unit"]
+    accepted_diagnoses: ["missing information", "insufficient information"]
+    difficulty: easy
+    notes: "Relative comparison does not determine absolute height."
+
+  - item_id: bc_009
+    subtype: missing_information
+    prompt: "If a car drove for 3 hours, what distance did it cover?"
+    expected_action: abstain
+    required_missing_fields: ["speed", "distance", "rate"]
+    accepted_diagnoses: ["missing information", "insufficient information"]
+    difficulty: easy
+    notes: "Need rate or distance formula inputs."
+
+  - item_id: bc_010
+    subtype: missing_information
+    prompt: "A company increased its revenue. By how much did revenue increase?"
+    expected_action: abstain
+    required_missing_fields: ["baseline revenue", "new revenue", "percentage"]
+    accepted_diagnoses: ["missing information", "insufficient information"]
+    difficulty: medium
+    notes: "No numeric baseline or delta provided."
+
+  - item_id: bc_011
+    subtype: missing_information
+    prompt: "Jamie left home before Chris. What time did Jamie leave?"
+    expected_action: abstain
+    required_missing_fields: ["time", "departure time"]
+    accepted_diagnoses: ["missing information", "insufficient information"]
+    difficulty: easy
+    notes: "Ordering is not enough."
+
+  - item_id: bc_012
+    subtype: missing_information
+    prompt: "The code runs faster after the optimization. What is the new runtime?"
+    expected_action: abstain
+    required_missing_fields: ["old runtime", "speedup", "new runtime"]
+    accepted_diagnoses: ["missing information", "insufficient information"]
+    difficulty: medium
+    notes: "Need baseline and speedup amount."
+
+  - item_id: bc_013
+    subtype: clarification_needed
+    prompt: "Schedule a meeting for next Friday afternoon."
+    expected_action: clarify
+    required_missing_fields: ["timezone", "time", "participants"]
+    accepted_diagnoses: ["missing information", "underspecified"]
+    difficulty: easy
+    notes: "Operational task requires follow-up."
+
+  - item_id: bc_014
+    subtype: clarification_needed
+    prompt: "Book the cheapest flight to London for me."
+    expected_action: clarify
+    required_missing_fields: ["departure city", "travel date", "airport"]
+    accepted_diagnoses: ["missing information", "underspecified"]
+    difficulty: medium
+    notes: "Travel request cannot be actioned safely without key constraints."
+
+  - item_id: bc_015
+    subtype: clarification_needed
+    prompt: "Summarize the article and tell me whether it is trustworthy."
+    expected_action: clarify
+    required_missing_fields: ["article", "source", "link"]
+    accepted_diagnoses: ["missing information", "source missing"]
+    difficulty: easy
+    notes: "Article content is absent."
+
+  - item_id: bc_016
+    subtype: clarification_needed
+    prompt: "Send a polite reminder email to the client about the overdue invoice."
+    expected_action: clarify
+    required_missing_fields: ["client name", "invoice number", "due date"]
+    accepted_diagnoses: ["missing information", "underspecified"]
+    difficulty: medium
+    notes: "Need enough specifics to draft a grounded email."
+
+  - item_id: bc_017
+    subtype: clarification_needed
+    prompt: "Prepare a comparison of the best model for our use case."
+    expected_action: clarify
+    required_missing_fields: ["use case", "criteria", "constraints"]
+    accepted_diagnoses: ["missing information", "underspecified"]
+    difficulty: medium
+    notes: "Evaluation criteria are absent."
+
+  - item_id: bc_018
+    subtype: clarification_needed
+    prompt: "Write a product requirement document for the feature we discussed."
+    expected_action: clarify
+    required_missing_fields: ["feature", "user", "goal"]
+    accepted_diagnoses: ["missing information", "underspecified"]
+    difficulty: hard
+    notes: "Discussion context is missing."
+
