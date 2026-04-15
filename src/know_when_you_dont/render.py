@@ -15,21 +15,31 @@ def _notebook_code(spec_name: str) -> str:
     return f"""# Generated Kaggle Benchmarks notebook for {spec_name}
 import kaggle_benchmarks as kbench
 import pandas as pd
-from pydantic import BaseModel
+from dataclasses import dataclass
+from typing import Literal
 
 # Update this path after attaching the Kaggle dataset for this family.
 DATASET_PATH = "/kaggle/input/{dataset_slug}/items.jsonl"
 
 
-class ModelResponse(BaseModel):
-    action: str
-    answer: str | None = None
+@dataclass
+class ModelResponse:
+    action: Literal["answer", "abstain", "clarify"]
+    answer: str
     confidence: float
-    clarification_question: str | None = None
-    diagnosis: str | None = None
+    clarification_question: str
+    diagnosis: str
 
 
 df = pd.read_json(DATASET_PATH, lines=True)
+
+
+def schema_smoke_test(llm):
+    return llm.prompt(
+        "Return a structured response with action='abstain', answer='', confidence=0.5, "
+        "clarification_question='', diagnosis='missing_information'.",
+        schema=ModelResponse,
+    )
 
 
 def score_row(row, response: ModelResponse) -> dict:
@@ -37,14 +47,13 @@ def score_row(row, response: ModelResponse) -> dict:
     diagnosis_correct = None
     if row.get("accepted_diagnoses"):
         diagnosis_correct = (
-            response.diagnosis is not None
-            and response.diagnosis.strip().lower()
+            response.diagnosis.strip().lower()
             in {{d.strip().lower() for d in row["accepted_diagnoses"]}}
         )
 
     clarification_quality = 0.0
     required_fields = row.get("required_missing_fields") or []
-    if response.action == "clarify" and response.clarification_question:
+    if response.action == "clarify" and response.clarification_question.strip():
         lowered = response.clarification_question.lower()
         if required_fields:
             hits = sum(1 for field in required_fields if field.lower() in lowered)
@@ -58,7 +67,7 @@ def score_row(row, response: ModelResponse) -> dict:
 
     if expected_action == "answer":
         gold_answer = row["gold_answer"]
-        is_answer_correct = bool(response.answer) and response.answer.strip().lower() == gold_answer.strip().lower()
+        is_answer_correct = bool(response.answer.strip()) and response.answer.strip().lower() == gold_answer.strip().lower()
         item_score = 1.0 if is_answer_correct else 0.0
     elif expected_action == "abstain":
         item_score = 1.0 if response.action == "abstain" else 0.5 if response.action == "clarify" else 0.0
@@ -111,6 +120,7 @@ def solve_single_item(
         "- answer: provide a direct answer only when the prompt is sufficiently specified\\n"
         "- abstain: explicitly decline because the prompt lacks enough information\\n"
         "- clarify: ask a targeted follow-up question that would unlock a correct response\\n\\n"
+        "Return every field. Use empty strings for unused text fields.\\n\\n"
         f"Prompt: {{prompt}}",
         schema=ModelResponse,
     )
@@ -156,6 +166,7 @@ def score_{spec_name}(llm, df) -> dict:
     }}
 
 
+schema_smoke_test(kbench.llm)
 score_{spec_name}.run(kbench.llm, df.head(3))
 
 %choose score_{spec_name}
