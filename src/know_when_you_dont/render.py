@@ -8,7 +8,6 @@ from .family_loader import load_family_spec, load_items, repo_root
 
 
 def _notebook_code(spec_name: str) -> str:
-    dataset_slug = spec_name.replace("_", "-")
     published_name = f"kwyd_{spec_name}"
     single_name = f"{published_name}_single"
 
@@ -18,8 +17,7 @@ import pandas as pd
 from dataclasses import dataclass
 from typing import Literal
 
-# Update this path after attaching the Kaggle dataset for this family.
-DATASET_PATH = "/kaggle/input/{dataset_slug}/items.jsonl"
+DATASET_PATH = "/kaggle/input/datasets/rishavutkarsh/benchmark/items.jsonl"
 
 
 @dataclass
@@ -161,6 +159,7 @@ def score_{spec_name}(llm, df) -> dict:
     }}
     return {{
         "overall_score": overall_score,
+        "passed": overall_score >= 0.7,
         "subtype_scores": subtype_scores,
         "guess_rate": float((result_series.str.get("predicted_action") == "answer").mean()),
     }}
