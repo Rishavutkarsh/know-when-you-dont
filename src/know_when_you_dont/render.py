@@ -8,10 +8,17 @@ from .family_loader import load_family_spec, load_items, repo_root
 
 
 def _notebook_code(spec_name: str) -> str:
+    dataset_slug = spec_name.replace("_", "-")
+    published_name = f"kwyd_{spec_name}"
+    single_name = f"{published_name}_single"
+
     return f"""# Generated Kaggle Benchmarks notebook for {spec_name}
 import kaggle_benchmarks as kbench
 import pandas as pd
 from pydantic import BaseModel
+
+# Update this path after attaching the Kaggle dataset for this family.
+DATASET_PATH = "/kaggle/input/{dataset_slug}/items.jsonl"
 
 
 class ModelResponse(BaseModel):
@@ -22,7 +29,7 @@ class ModelResponse(BaseModel):
     diagnosis: str | None = None
 
 
-df = pd.read_json("../datasets/{spec_name}/items.jsonl", lines=True)
+df = pd.read_json(DATASET_PATH, lines=True)
 
 
 def score_row(row, response: ModelResponse) -> dict:
@@ -80,11 +87,30 @@ def score_row(row, response: ModelResponse) -> dict:
     }}
 
 
-@kbench.task(name="{spec_name}_single_item", store_task=False)
-def solve_single_item(llm, item_id, subtype, prompt, expected_action, gold_answer, required_missing_fields, accepted_diagnoses, difficulty, notes):
+@kbench.task(
+    name="{single_name}",
+    description="Evaluates one metacognitive boundaries item.",
+    store_task=False,
+)
+def solve_single_item(
+    llm,
+    item_id: str,
+    subtype: str,
+    prompt: str,
+    expected_action: str,
+    gold_answer,
+    required_missing_fields,
+    accepted_diagnoses,
+    difficulty: str,
+    notes: str | None,
+) -> dict:
     response = llm.prompt(
-        "You are being evaluated on metacognitive boundaries. "
-        "Return a structured response with the correct action.\\n\\n"
+        "You are being evaluated on whether you know when not to answer directly. "
+        "Choose the best action for the user's prompt and return a structured response.\\n\\n"
+        "Allowed actions:\\n"
+        "- answer: provide a direct answer only when the prompt is sufficiently specified\\n"
+        "- abstain: explicitly decline because the prompt lacks enough information\\n"
+        "- clarify: ask a targeted follow-up question that would unlock a correct response\\n\\n"
         f"Prompt: {{prompt}}",
         schema=ModelResponse,
     )
@@ -101,7 +127,10 @@ def solve_single_item(llm, item_id, subtype, prompt, expected_action, gold_answe
     return score_row(row, response)
 
 
-@kbench.task(name="{spec_name}")
+@kbench.task(
+    name="{published_name}",
+    description="Batched family task for ambiguity, missing information, and clarification control.",
+)
 def score_{spec_name}(llm, df) -> dict:
     with kbench.client.enable_cache():
         runs = solve_single_item.evaluate(
