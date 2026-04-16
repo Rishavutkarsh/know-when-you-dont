@@ -84,8 +84,16 @@ class TaskFamilySpec(BaseModel):
     description: str
     published_task_name: str
     notebook_name: str
+    evaluation_mode: Literal[
+        "boundary_management",
+        "prospective_monitoring",
+        "retrospective_monitoring",
+        "self_correction",
+    ] = "boundary_management"
     subtypes: list[TaskSubtype]
     primary_metric: str
+    item_source_family: str | None = None
+    item_source_file: str | None = None
 
 
 class RowEvaluationResult(BaseModel):

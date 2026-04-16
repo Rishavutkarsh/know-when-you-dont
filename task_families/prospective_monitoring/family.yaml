@@ -1,0 +1,17 @@
+family_name: prospective_monitoring
+display_name: "Know When You Don't: Prospective Monitoring"
+description: >
+  A metacognitive task family that asks models to predict, before answering,
+  how likely they are to respond appropriately and correctly on the shared task set.
+published_task_name: kwyd_prospective_monitoring
+notebook_name: kwyd_prospective_monitoring.ipynb
+evaluation_mode: prospective_monitoring
+subtypes:
+  - clarify_ambiguity
+  - clarify_missing_detail
+  - abstain_underdetermined
+  - challenge_false_premise
+  - answer_safe_control
+primary_metric: overall_score
+item_source_family: boundaries_clarification
+item_source_file: items_current.yaml
