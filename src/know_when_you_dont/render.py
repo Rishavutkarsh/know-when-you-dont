@@ -16,7 +16,7 @@ import kaggle_benchmarks as kbench
 import pandas as pd
 from dataclasses import dataclass
 
-DATASET_PATH = "/kaggle/input/datasets/rishavutkarsh/benchmark/items.jsonl"
+DATASET_PATH = "/kaggle/input/datasets/rishavutkarsh/tasks-boundary-classification/datasets/boundaries_clarification/items.jsonl"
 
 
 df = pd.read_json(DATASET_PATH, lines=True)
