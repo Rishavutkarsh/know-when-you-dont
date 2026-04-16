@@ -107,6 +107,26 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
             return None
 
 
+        def short_text(value: Any, limit: int = 400) -> str:
+            if value is None:
+                return ""
+            text = " ".join(str(value).split())
+            if len(text) <= limit:
+                return text
+            return text[: limit - 3] + "..."
+
+
+        def warning_message(context: str, prompt: Any = None, output: Any = None, extra: Any = None) -> str:
+            parts = [context]
+            if prompt is not None:
+                parts.append("prompt=" + short_text(prompt))
+            if output is not None:
+                parts.append("output=" + short_text(output))
+            if extra is not None:
+                parts.append("extra=" + short_text(extra))
+            return " | ".join(parts)
+
+
         def extract_json_object(raw_text: str) -> dict[str, Any]:
             if raw_text is None:
                 raise ValueError("Judge returned no content")
@@ -151,12 +171,12 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
             try:
                 payload = extract_json_object(raw_text)
             except Exception as exc:
-                message = f"{{context}} parsing failed: {{exc}}"
+                message = warning_message(f"{{context}} parsing failed", output=raw_text, extra=exc)
                 logging.warning(message)
                 return ParsedStructuredOutput(data=None, warning=message)
             missing_fields = [field for field in required_fields if field not in payload]
             if missing_fields:
-                message = f"{{context}} missing required fields: {{missing_fields}}"
+                message = warning_message(f"{{context}} missing required fields: {{missing_fields}}", output=raw_text)
                 logging.warning(message)
                 return ParsedStructuredOutput(data=payload, warning=message)
             return ParsedStructuredOutput(data=payload, warning=None)
@@ -170,7 +190,7 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
             predicted_success = clamp_unit_interval(payload.get("predicted_success"))
             answer = coerce_string(payload.get("answer"))
             if predicted_success is None or answer is None:
-                message = "ProspectiveResponse contained invalid predicted_success or answer"
+                message = warning_message("ProspectiveResponse contained invalid predicted_success or answer", output=raw_text)
                 logging.warning(message)
                 return None, message
             return {{"predicted_success": predicted_success, "answer": answer}}, None
@@ -185,7 +205,7 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
             likely_correct = coerce_bool(payload.get("likely_correct"))
             reason = coerce_string(payload.get("reason")) or ""
             if confidence is None or likely_correct is None:
-                message = "RetrospectiveAssessment contained invalid confidence or likely_correct"
+                message = warning_message("RetrospectiveAssessment contained invalid confidence or likely_correct", output=raw_text)
                 logging.warning(message)
                 return None, message
             return {{"confidence": confidence, "likely_correct": likely_correct, "reason": reason}}, None
@@ -199,7 +219,7 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
             final_answer = coerce_string(payload.get("final_answer"))
             reason = coerce_string(payload.get("reason")) or ""
             if final_answer is None:
-                message = "RevisedAnswer contained invalid final_answer"
+                message = warning_message("RevisedAnswer contained invalid final_answer", output=raw_text)
                 logging.warning(message)
                 return None, message
             return {{"final_answer": final_answer, "reason": reason}}, None
@@ -233,6 +253,7 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
 
         def judge_once(prompt: str, response_text: str, gold_answer, variant_name: str, variant_guidance: str) -> JudgeVote:
             gold_answer_text = gold_answer if gold_answer else ""
+            judged_text = ""
             try:
                 judged_text = JUDGE_LLM.prompt(
                 "You are labeling how a model responded to a user prompt.\\n\\n"
@@ -267,7 +288,12 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
                 return parse_judge_vote(judged_text)
             except Exception as exc:
                 return invalid_judge_vote(
-                    f"Judge parsing failed for variant '{{variant_name}}': {{exc}}"
+                    warning_message(
+                        f"Judge parsing failed for variant '{{variant_name}}'",
+                        prompt=prompt,
+                        output=judged_text,
+                        extra=exc,
+                    )
                 )
 
 
