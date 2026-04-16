@@ -10,13 +10,12 @@ from .family_loader import load_family_spec, load_items, repo_root
 
 def _dataset_path_for(family_name: str) -> str:
     return (
-        "/kaggle/input/datasets/rishavutkarsh/tasks-boundary-classification/"
+        "/kaggle/input/datasets/rishavutkarsh/know-when-you-dont/"
         f"datasets/{family_name}/items.jsonl"
     )
 
 
-def _common_code(dataset_path: str, prompt_condition: str, judge_model_name: str | None) -> str:
-    judge_literal = json.dumps(judge_model_name) if judge_model_name else "None"
+def _common_code(dataset_path: str, prompt_condition: str) -> str:
     return dedent(
         f"""
         import kaggle_benchmarks as kbench
@@ -29,26 +28,9 @@ def _common_code(dataset_path: str, prompt_condition: str, judge_model_name: str
 
         DATASET_PATH = "{dataset_path}"
         PROMPT_CONDITION = "{prompt_condition}"
-        JUDGE_MODEL_NAME = {judge_literal}
-        N_JOBS = 2
+        N_JOBS = 4
         TIMEOUT_SECONDS = 600
-        LOGGED_WARNINGS: set[str] = set()
-
-
-        def resolve_judge_llm():
-            if not JUDGE_MODEL_NAME:
-                return kbench.judge_llm
-            factory = getattr(kbench, "model", None) or getattr(kbench, "get_model", None)
-            if callable(factory):
-                return factory(JUDGE_MODEL_NAME)
-            logging.warning(
-                "Pinned judge model '%s' requested, but no explicit model factory was found. Falling back to kbench.judge_llm.",
-                JUDGE_MODEL_NAME,
-            )
-            return kbench.judge_llm
-
-
-        JUDGE_LLM = resolve_judge_llm()
+        JUDGE_LLM = kbench.judge_llm
         df = pd.read_json(DATASET_PATH, lines=True)
 
 
@@ -156,9 +138,7 @@ def _common_code(dataset_path: str, prompt_condition: str, judge_model_name: str
 
 
         def invalid_judge_vote(message: str) -> JudgeVote:
-            if message not in LOGGED_WARNINGS:
-                logging.warning(message)
-                LOGGED_WARNINGS.add(message)
+            logging.warning(message)
             return JudgeVote(
                 label="hedge",
                 clarification_quality=None,
@@ -172,16 +152,12 @@ def _common_code(dataset_path: str, prompt_condition: str, judge_model_name: str
                 payload = extract_json_object(raw_text)
             except Exception as exc:
                 message = f"{{context}} parsing failed: {{exc}}"
-                if message not in LOGGED_WARNINGS:
-                    logging.warning(message)
-                    LOGGED_WARNINGS.add(message)
+                logging.warning(message)
                 return ParsedStructuredOutput(data=None, warning=message)
             missing_fields = [field for field in required_fields if field not in payload]
             if missing_fields:
                 message = f"{{context}} missing required fields: {{missing_fields}}"
-                if message not in LOGGED_WARNINGS:
-                    logging.warning(message)
-                    LOGGED_WARNINGS.add(message)
+                logging.warning(message)
                 return ParsedStructuredOutput(data=payload, warning=message)
             return ParsedStructuredOutput(data=payload, warning=None)
 
@@ -738,7 +714,7 @@ def _notebook_code(spec) -> str:
     single_name = f"kwyd_{spec.family_name}_single"
     published_name = f"kwyd_{spec.family_name}"
     dataset_path = _dataset_path_for(spec.family_name)
-    parts = [_common_code(dataset_path, spec.prompt_condition, spec.judge_model_name)]
+    parts = [_common_code(dataset_path, spec.prompt_condition)]
     if spec.evaluation_mode == "boundary_management":
         parts.append(_boundary_code(spec.family_name, single_name, published_name))
     elif spec.evaluation_mode == "prospective_monitoring":

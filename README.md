@@ -72,7 +72,6 @@ The judge path is intentionally lightweight:
 - judge variants vote on behavior
 - the notebooks parse judge output defensively instead of relying on brittle strict schema parsing
 - if required judge fields are missing for a case, the notebook logs a warning and assigns that item a score of `0.0` instead of crashing
-- each notebook now exposes a single `JUDGE_MODEL_NAME` constant so a named judge can be pinned in one place if Kaggle exposes explicit judge selection
 
 This makes large Kaggle runs much more stable.
 
