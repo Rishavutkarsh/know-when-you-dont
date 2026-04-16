@@ -6,6 +6,7 @@ description: >
   responding with the right behavior instead of guessing.
 published_task_name: kwyd_boundaries_clarification
 notebook_name: kwyd_boundaries_clarification.ipynb
+prompt_condition: natural
 subtypes:
   - clarify_ambiguity
   - clarify_missing_detail
@@ -13,3 +14,4 @@ subtypes:
   - challenge_false_premise
   - answer_safe_control
 primary_metric: overall_score
+item_source_file: items_eval.yaml

@@ -90,8 +90,10 @@ class TaskFamilySpec(BaseModel):
         "retrospective_monitoring",
         "self_correction",
     ] = "boundary_management"
+    prompt_condition: Literal["natural", "elicited"] = "natural"
     subtypes: list[TaskSubtype]
     primary_metric: str
+    judge_model_name: str | None = None
     item_source_family: str | None = None
     item_source_file: str | None = None
 

@@ -6,6 +6,7 @@ description: >
 published_task_name: kwyd_retrospective_monitoring
 notebook_name: kwyd_retrospective_monitoring.ipynb
 evaluation_mode: retrospective_monitoring
+prompt_condition: natural
 subtypes:
   - clarify_ambiguity
   - clarify_missing_detail
@@ -14,4 +15,4 @@ subtypes:
   - answer_safe_control
 primary_metric: overall_score
 item_source_family: boundaries_clarification
-item_source_file: items_current.yaml
+item_source_file: items_eval.yaml

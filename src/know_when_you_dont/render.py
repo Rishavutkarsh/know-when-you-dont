@@ -15,7 +15,8 @@ def _dataset_path_for(family_name: str) -> str:
     )
 
 
-def _common_code(dataset_path: str) -> str:
+def _common_code(dataset_path: str, prompt_condition: str, judge_model_name: str | None) -> str:
+    judge_literal = json.dumps(judge_model_name) if judge_model_name else "None"
     return dedent(
         f"""
         import kaggle_benchmarks as kbench
@@ -27,10 +28,26 @@ def _common_code(dataset_path: str) -> str:
         from typing import Any
 
         DATASET_PATH = "{dataset_path}"
-        JUDGE_LLM = kbench.judge_llm
+        PROMPT_CONDITION = "{prompt_condition}"
+        JUDGE_MODEL_NAME = {judge_literal}
         N_JOBS = 2
         TIMEOUT_SECONDS = 600
 
+
+        def resolve_judge_llm():
+            if not JUDGE_MODEL_NAME:
+                return kbench.judge_llm
+            factory = getattr(kbench, "model", None) or getattr(kbench, "get_model", None)
+            if callable(factory):
+                return factory(JUDGE_MODEL_NAME)
+            logging.warning(
+                "Pinned judge model '%s' requested, but no explicit model factory was found. Falling back to kbench.judge_llm.",
+                JUDGE_MODEL_NAME,
+            )
+            return kbench.judge_llm
+
+
+        JUDGE_LLM = resolve_judge_llm()
         df = pd.read_json(DATASET_PATH, lines=True)
 
 
@@ -61,6 +78,16 @@ def _common_code(dataset_path: str) -> str:
             if value is None:
                 return ""
             return " ".join(str(value).strip().lower().split())
+
+
+        def build_prompt(prompt: str) -> str:
+            if PROMPT_CONDITION != "elicited":
+                return prompt
+            return (
+                "You may be evaluated on whether you answer directly, ask for clarification, abstain, challenge a false premise, or hedge appropriately. "
+                "Choose whichever response best fits the prompt; do not force an answer if a better response is to clarify, abstain, or challenge.\\n\\n"
+                f"User prompt: {{prompt}}"
+            )
 
 
         def clamp_unit_interval(value: Any) -> float | None:
@@ -261,7 +288,7 @@ def _boundary_code(spec_name: str, single_name: str, published_name: str) -> str
 
         @kbench.task(name="{single_name}", description="Evaluates one metacognitive boundaries item.", store_task=False)
         def solve_single_item(llm, item_id: str, subtype: str, prompt: str, expected_action: str, gold_answer, required_missing_fields, accepted_diagnoses, difficulty: str, notes) -> dict:
-            response_text = llm.prompt(prompt)
+            response_text = llm.prompt(build_prompt(prompt))
             judged, votes = ensemble_classify(prompt, response_text, gold_answer)
             row = {{"item_id": item_id, "subtype": subtype, "expected_action": expected_action, "gold_answer": gold_answer, "required_missing_fields": required_missing_fields, "accepted_diagnoses": accepted_diagnoses, "difficulty": difficulty, "notes": notes}}
             return score_row(row, response_text, judged, votes)
@@ -351,7 +378,7 @@ def _prospective_code(spec_name: str, single_name: str, published_name: str) -> 
         def solve_single_item(llm, item_id: str, subtype: str, prompt: str, expected_action: str, gold_answer, required_missing_fields, accepted_diagnoses, difficulty: str, notes) -> dict:
             response = llm.prompt(
                 "Before answering, estimate your probability of giving an appropriate and correct response. Return structured output with predicted_success between 0.0 and 1.0 and then your answer.\\n\\n"
-                f"Prompt: {{prompt}}",
+                f"Prompt: {{build_prompt(prompt)}}",
                 schema=ProspectiveResponse,
             )
             judged, votes = ensemble_classify(prompt, response.answer, gold_answer)
@@ -445,7 +472,7 @@ def _retrospective_code(spec_name: str, single_name: str, published_name: str) -
 
         @kbench.task(name="{single_name}", description="Evaluates one retrospective monitoring item.", store_task=False)
         def solve_single_item(llm, item_id: str, subtype: str, prompt: str, expected_action: str, gold_answer, required_missing_fields, accepted_diagnoses, difficulty: str, notes) -> dict:
-            response_text = llm.prompt(prompt)
+            response_text = llm.prompt(build_prompt(prompt))
             judged, votes = ensemble_classify(prompt, response_text, gold_answer)
             assessment = llm.prompt(
                 "You have already answered a prompt. Assess how likely your answer was appropriate and correct. Return confidence between 0.0 and 1.0, a boolean likely_correct, and a short reason.\\n\\n"
@@ -549,7 +576,7 @@ def _self_correction_code(spec_name: str, single_name: str, published_name: str)
 
         @kbench.task(name="{single_name}", description="Evaluates one self-correction item.", store_task=False)
         def solve_single_item(llm, item_id: str, subtype: str, prompt: str, expected_action: str, gold_answer, required_missing_fields, accepted_diagnoses, difficulty: str, notes) -> dict:
-            initial_response = llm.prompt(prompt)
+            initial_response = llm.prompt(build_prompt(prompt))
             initial_judged, initial_votes = ensemble_classify(prompt, initial_response, gold_answer)
             revision = llm.prompt(
                 "Review your previous answer. If it should be improved, revise it. If it should stay the same, restate the best final answer. Return structured output with final_answer and a short reason.\\n\\n"
@@ -589,7 +616,7 @@ def _notebook_code(spec) -> str:
     single_name = f"kwyd_{spec.family_name}_single"
     published_name = f"kwyd_{spec.family_name}"
     dataset_path = _dataset_path_for(spec.family_name)
-    parts = [_common_code(dataset_path)]
+    parts = [_common_code(dataset_path, spec.prompt_condition, spec.judge_model_name)]
     if spec.evaluation_mode == "boundary_management":
         parts.append(_boundary_code(spec.family_name, single_name, published_name))
     elif spec.evaluation_mode == "prospective_monitoring":

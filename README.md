@@ -12,21 +12,25 @@ This repo is where we define task families, shared items, schemas, scoring logic
 
 ## Current Families
 
-The repo currently includes four families built on the same shared task set:
+The repo currently includes five families built on the same shared task set:
 
 1. `boundaries_clarification`
    - natural boundary management
    - asks whether a model answers, clarifies, abstains, or challenges appropriately
 
-2. `prospective_monitoring`
+2. `boundaries_clarification_elicited`
+   - boundary management with the behavior options made explicit
+   - asks how much the model improves when it knows it may answer, clarify, abstain, challenge, or hedge
+
+3. `prospective_monitoring`
    - confidence before answering
    - asks the model to predict how likely it is to respond appropriately and correctly
 
-3. `retrospective_monitoring`
+4. `retrospective_monitoring`
    - confidence after answering
    - asks the model to assess whether its response was likely appropriate and correct
 
-4. `self_correction`
+5. `self_correction`
    - revision after reflection
    - asks the model to review and improve its own response
 
@@ -40,11 +44,17 @@ The current shared pool is centered on boundary management and includes five sub
 - `challenge_false_premise`
 - `answer_safe_control`
 
-The working shared item set lives in:
+The authoring bank lives in:
 
 - [items_current.yaml](/C:/Users/risha/Documents/New%20project/know-when-you-dont/task_families/boundaries_clarification/items_current.yaml)
 
-Other families reuse that source through their `family.yaml` configuration.
+The curated eval set currently used by the rendered families lives in:
+
+- [items_eval.yaml](/C:/Users/risha/Documents/New%20project/know-when-you-dont/task_families/boundaries_clarification/items_eval.yaml)
+
+That eval set includes a small MCQ slice alongside the original free-form prompts.
+
+Other families reuse the curated source through their `family.yaml` configuration.
 
 ## Judge Design
 
@@ -57,6 +67,7 @@ The judge path is intentionally lightweight:
 - judge variants vote on behavior
 - the notebooks parse judge output defensively instead of relying on brittle strict schema parsing
 - if required judge fields are missing for a case, the notebook logs a warning and assigns that item a score of `0.0` instead of crashing
+- each notebook now exposes a single `JUDGE_MODEL_NAME` constant so a named judge can be pinned in one place if Kaggle exposes explicit judge selection
 
 This makes large Kaggle runs much more stable.
 
@@ -88,6 +99,7 @@ Use the package with `PYTHONPATH=src` if it is not installed in the environment.
 ```powershell
 $env:PYTHONPATH='src'
 python -m know_when_you_dont.render boundaries_clarification
+python -m know_when_you_dont.render boundaries_clarification_elicited
 python -m know_when_you_dont.render prospective_monitoring
 python -m know_when_you_dont.render retrospective_monitoring
 python -m know_when_you_dont.render self_correction
@@ -96,8 +108,9 @@ python -m know_when_you_dont.render self_correction
 ## Current Status
 
 - Boundary Management is the most mature family.
-- The shared prompt bank has been expanded into a larger current item set.
-- Additional families now render from the same shared pool with family-specific prompting and scoring.
+- The shared prompt bank has been expanded into a larger current item set and a curated eval set.
+- Boundary Management now has both natural and elicited conditions.
+- Additional families render from the same shared pool with family-specific prompting and scoring.
 - Kaggle runs are producing differentiated scores across models, which is exactly what we want at this stage.
 
 ## Notes

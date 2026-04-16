@@ -1,0 +1,20 @@
+family_name: boundaries_clarification_elicited
+display_name: "Know When You Don't: Boundaries and Clarification (Elicited)"
+description: >
+  A boundary-management family that reuses the shared eval items but explicitly
+  tells the model it may answer, clarify, abstain, challenge, or hedge. This
+  condition measures how much behavior improves when the response options are
+  made explicit.
+published_task_name: kwyd_boundaries_clarification_elicited
+notebook_name: kwyd_boundaries_clarification_elicited.ipynb
+evaluation_mode: boundary_management
+prompt_condition: elicited
+subtypes:
+  - clarify_ambiguity
+  - clarify_missing_detail
+  - abstain_underdetermined
+  - challenge_false_premise
+  - answer_safe_control
+primary_metric: overall_score
+item_source_family: boundaries_clarification
+item_source_file: items_eval.yaml
