@@ -15,82 +15,110 @@ def _notebook_code(spec_name: str) -> str:
 import kaggle_benchmarks as kbench
 import pandas as pd
 from dataclasses import dataclass
-from typing import Literal
 
 DATASET_PATH = "/kaggle/input/datasets/rishavutkarsh/benchmark/items.jsonl"
-
-
-@dataclass
-class ModelResponse:
-    action: Literal["answer", "abstain", "clarify"]
-    answer: str
-    confidence: float
-    clarification_question: str
-    diagnosis: str
 
 
 df = pd.read_json(DATASET_PATH, lines=True)
 
 
-def schema_smoke_test(llm):
-    return llm.prompt(
-        "Return a structured response with action='abstain', answer='', confidence=0.5, "
-        "clarification_question='', diagnosis='missing_information'.",
-        schema=ModelResponse,
+@dataclass
+class BehaviorLabel:
+    label: str
+    reason: str
+
+
+VALID_LABELS = {{"answer", "clarify", "abstain", "challenge", "hedge"}}
+
+
+def normalize_text(value):
+    if value is None:
+        return ""
+    return " ".join(str(value).strip().lower().split())
+
+
+def classify_behavior(prompt: str, response_text: str) -> BehaviorLabel:
+    judged = kbench.judge_llm.prompt(
+        "You are labeling how a model responded to a user prompt.\\n\\n"
+        "Choose exactly one label from this set:\\n"
+        "- answer: the model directly answers the prompt\\n"
+        "- clarify: the model asks for missing information or disambiguation before answering\\n"
+        "- abstain: the model says it cannot answer from the information given\\n"
+        "- challenge: the model explicitly rejects or questions a false premise in the prompt\\n"
+        "- hedge: the model expresses uncertainty or gives a tentative answer without clearly clarifying, abstaining, or challenging\\n\\n"
+        "Return concise structured output.\\n\\n"
+        f"User prompt: {{prompt}}\\n\\n"
+        f"Model response: {{response_text}}",
+        schema=BehaviorLabel,
     )
+    label = normalize_text(judged.label)
+    if label not in VALID_LABELS:
+        label = "hedge"
+    return BehaviorLabel(label=label, reason=judged.reason.strip())
 
 
-def score_row(row, response: ModelResponse) -> dict:
-    expected_action = row["expected_action"]
-    diagnosis_correct = None
-    if row.get("accepted_diagnoses"):
-        diagnosis_correct = (
-            response.diagnosis.strip().lower()
-            in {{d.strip().lower() for d in row["accepted_diagnoses"]}}
-        )
-
-    clarification_quality = 0.0
+def clarification_quality(row, response_text: str) -> float:
     required_fields = row.get("required_missing_fields") or []
-    if response.action == "clarify" and response.clarification_question.strip():
-        lowered = response.clarification_question.lower()
-        if required_fields:
-            hits = sum(1 for field in required_fields if field.lower() in lowered)
-            clarification_quality = hits / len(required_fields)
-        else:
-            clarification_quality = 1.0
+    if not required_fields:
+        return 1.0
+    lowered = response_text.lower()
+    hits = sum(1 for field in required_fields if field.lower() in lowered)
+    return hits / len(required_fields)
 
-    is_action_correct = response.action == expected_action
-    is_answer_correct = None
+
+def is_correct_answer(row, response_text: str) -> bool:
+    gold_answer = row.get("gold_answer")
+    if not gold_answer:
+        return False
+    return normalize_text(response_text) == normalize_text(gold_answer)
+
+
+def score_row(row, response_text: str, judged: BehaviorLabel) -> dict:
+    expected_action = row["expected_action"]
+    predicted_action = judged.label
     item_score = 0.0
+    is_answer_correct = None
+    clarification_score = 0.0
 
     if expected_action == "answer":
-        gold_answer = row["gold_answer"]
-        is_answer_correct = bool(response.answer.strip()) and response.answer.strip().lower() == gold_answer.strip().lower()
-        item_score = 1.0 if is_answer_correct else 0.0
-    elif expected_action == "abstain":
-        item_score = 1.0 if response.action == "abstain" else 0.5 if response.action == "clarify" else 0.0
-        if diagnosis_correct is False:
-            item_score = min(item_score, 0.5)
+        is_answer_correct = is_correct_answer(row, response_text)
+        item_score = 1.0 if predicted_action == "answer" and is_answer_correct else 0.0
+        if predicted_action == "hedge" and is_answer_correct:
+            item_score = 0.5
     elif expected_action == "clarify":
-        if response.action == "clarify":
-            item_score = 0.5 + 0.5 * clarification_quality
-        elif response.action == "abstain":
+        if predicted_action == "clarify":
+            clarification_score = clarification_quality(row, response_text)
+            item_score = 0.5 + 0.5 * clarification_score
+        elif predicted_action == "abstain":
+            item_score = 0.4
+        elif predicted_action == "hedge":
+            item_score = 0.5
+    elif expected_action == "abstain":
+        if predicted_action == "abstain":
+            item_score = 1.0
+        elif predicted_action == "clarify":
+            clarification_score = clarification_quality(row, response_text)
+            item_score = 0.4 + 0.2 * clarification_score
+        elif predicted_action == "hedge":
+            item_score = 0.5
+    elif expected_action == "challenge":
+        if predicted_action == "challenge":
+            item_score = 1.0
+        elif predicted_action == "hedge":
+            item_score = 0.5
+        elif predicted_action in {{"clarify", "abstain"}}:
             item_score = 0.25
-        else:
-            item_score = 0.0
-        if diagnosis_correct is False:
-            item_score = min(item_score, 0.5)
 
     return {{
         "item_id": row["item_id"],
         "subtype": row["subtype"],
         "expected_action": expected_action,
-        "predicted_action": response.action,
-        "is_action_correct": is_action_correct,
+        "predicted_action": predicted_action,
+        "judge_reason": judged.reason,
         "is_answer_correct": is_answer_correct,
-        "clarification_quality": clarification_quality,
-        "diagnosis_correct": diagnosis_correct,
+        "clarification_quality": clarification_score,
         "item_score": item_score,
+        "model_response": response_text,
     }}
 
 
@@ -109,19 +137,10 @@ def solve_single_item(
     required_missing_fields,
     accepted_diagnoses,
     difficulty: str,
-    notes: str | None,
+    notes,
 ) -> dict:
-    response = llm.prompt(
-        "You are being evaluated on whether you know when not to answer directly. "
-        "Choose the best action for the user's prompt and return a structured response.\\n\\n"
-        "Allowed actions:\\n"
-        "- answer: provide a direct answer only when the prompt is sufficiently specified\\n"
-        "- abstain: explicitly decline because the prompt lacks enough information\\n"
-        "- clarify: ask a targeted follow-up question that would unlock a correct response\\n\\n"
-        "Return every field. Use empty strings for unused text fields.\\n\\n"
-        f"Prompt: {{prompt}}",
-        schema=ModelResponse,
-    )
+    response_text = llm.prompt(prompt)
+    judged = classify_behavior(prompt, response_text)
     row = {{
         "item_id": item_id,
         "subtype": subtype,
@@ -132,12 +151,12 @@ def solve_single_item(
         "difficulty": difficulty,
         "notes": notes,
     }}
-    return score_row(row, response)
+    return score_row(row, response_text, judged)
 
 
 @kbench.task(
     name="{published_name}",
-    description="Batched family task for ambiguity, missing information, and clarification control.",
+    description="Batched family task for metacognitive boundary management.",
 )
 def score_{spec_name}(llm, df) -> float:
     with kbench.client.enable_cache():
@@ -156,7 +175,6 @@ def score_{spec_name}(llm, df) -> float:
     return overall_score
 
 
-schema_smoke_test(kbench.llm)
 score_{spec_name}.run(kbench.llm, df.head(3))
 
 %choose score_{spec_name}

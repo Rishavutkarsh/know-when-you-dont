@@ -1,13 +1,15 @@
 family_name: boundaries_clarification
 display_name: "Know When You Don't: Boundaries and Clarification"
 description: >
-  A metacognitive task family that rewards models for detecting ambiguity,
-  recognizing insufficient information, and asking targeted clarification
-  questions instead of guessing.
+  A metacognitive task family for boundary management: recognizing ambiguity,
+  insufficient information, false premises, and safe answerable controls, then
+  responding with the right behavior instead of guessing.
 published_task_name: kwyd_boundaries_clarification
 notebook_name: kwyd_boundaries_clarification.ipynb
 subtypes:
   - ambiguity
   - missing_information
   - clarification_needed
+  - false_premise
+  - sufficient_request
 primary_metric: overall_score

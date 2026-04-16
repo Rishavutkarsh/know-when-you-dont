@@ -10,12 +10,16 @@ class ResponseAction(str, Enum):
     ANSWER = "answer"
     ABSTAIN = "abstain"
     CLARIFY = "clarify"
+    CHALLENGE = "challenge"
+    HEDGE = "hedge"
 
 
 class TaskSubtype(str, Enum):
     AMBIGUITY = "ambiguity"
     MISSING_INFORMATION = "missing_information"
     CLARIFICATION_NEEDED = "clarification_needed"
+    FALSE_PREMISE = "false_premise"
+    SUFFICIENT_REQUEST = "sufficient_request"
 
 
 class ModelResponse(BaseModel):
@@ -89,4 +93,3 @@ class RowEvaluationResult(BaseModel):
     clarification_quality: float = Field(ge=0.0, le=1.0, default=0.0)
     diagnosis_correct: bool | None = None
     item_score: float = Field(ge=0.0, le=1.0)
-

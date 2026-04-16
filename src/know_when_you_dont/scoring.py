@@ -42,12 +42,27 @@ def evaluate_response(item: TaskItem, response: ModelResponse) -> RowEvaluationR
         score = 1.0 if response.action == ResponseAction.ABSTAIN else 0.0
         if response.action == ResponseAction.CLARIFY:
             score = 0.5
+        if response.action == ResponseAction.HEDGE:
+            score = 0.5
         if diagnosis_correct is False:
             score = min(score, 0.5)
     elif item.expected_action == ResponseAction.CLARIFY:
         if response.action == ResponseAction.CLARIFY:
             score = 0.5 + 0.5 * clarification_quality
         elif response.action == ResponseAction.ABSTAIN:
+            score = 0.25
+        elif response.action == ResponseAction.HEDGE:
+            score = 0.5
+        else:
+            score = 0.0
+        if diagnosis_correct is False:
+            score = min(score, 0.5)
+    elif item.expected_action == ResponseAction.CHALLENGE:
+        if response.action == ResponseAction.CHALLENGE:
+            score = 1.0
+        elif response.action == ResponseAction.HEDGE:
+            score = 0.5
+        elif response.action in (ResponseAction.CLARIFY, ResponseAction.ABSTAIN):
             score = 0.25
         else:
             score = 0.0
@@ -65,4 +80,3 @@ def evaluate_response(item: TaskItem, response: ModelResponse) -> RowEvaluationR
         diagnosis_correct=diagnosis_correct,
         item_score=score,
     )
-
