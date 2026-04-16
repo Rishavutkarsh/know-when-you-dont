@@ -59,6 +59,12 @@ def _common_code(dataset_path: str, prompt_condition: str, judge_model_name: str
             warning: str | None = None
 
 
+        @dataclass
+        class ParsedStructuredOutput:
+            data: dict[str, Any] | None
+            warning: str | None = None
+
+
         VALID_LABELS = {{"answer", "clarify", "abstain", "challenge", "hedge"}}
         LABEL_PRIORITY = ["challenge", "abstain", "clarify", "hedge", "answer"]
         BASE_SCORES = {{
@@ -99,10 +105,30 @@ def _common_code(dataset_path: str, prompt_condition: str, judge_model_name: str
                 return None
 
 
+        def coerce_string(value: Any) -> str | None:
+            if value is None:
+                return None
+            text = str(value).strip()
+            return text or None
+
+
+        def coerce_bool(value: Any) -> bool | None:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                normalized = normalize_text(value)
+                if normalized in {"true", "yes", "1"}:
+                    return True
+                if normalized in {"false", "no", "0"}:
+                    return False
+            return None
+
+
         def extract_json_object(raw_text: str) -> dict[str, Any]:
             if raw_text is None:
                 raise ValueError("Judge returned no content")
             text = str(raw_text).strip()
+            text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE).strip()
             if text.startswith("```"):
                 text = re.sub(r"^```(?:json)?\\s*", "", text)
                 text = re.sub(r"\\s*```$", "", text)
@@ -138,6 +164,90 @@ def _common_code(dataset_path: str, prompt_condition: str, judge_model_name: str
                 answer_correct=None,
                 warning=message,
             )
+
+
+        def parse_structured_output(raw_text: str, required_fields: list[str], context: str) -> ParsedStructuredOutput:
+            try:
+                payload = extract_json_object(raw_text)
+            except Exception as exc:
+                message = f"{{context}} parsing failed: {{exc}}"
+                logging.warning(message)
+                return ParsedStructuredOutput(data=None, warning=message)
+            missing_fields = [field for field in required_fields if field not in payload]
+            if missing_fields:
+                message = f"{{context}} missing required fields: {{missing_fields}}"
+                logging.warning(message)
+                return ParsedStructuredOutput(data=payload, warning=message)
+            return ParsedStructuredOutput(data=payload, warning=None)
+
+
+        def parse_prospective_response(raw_text: str):
+            parsed = parse_structured_output(raw_text, ["predicted_success", "answer"], "ProspectiveResponse")
+            if parsed.warning:
+                return None, parsed.warning
+            payload = parsed.data or {{}}
+            predicted_success = clamp_unit_interval(payload.get("predicted_success"))
+            answer = coerce_string(payload.get("answer"))
+            if predicted_success is None or answer is None:
+                message = "ProspectiveResponse contained invalid predicted_success or answer"
+                logging.warning(message)
+                return None, message
+            return {{"predicted_success": predicted_success, "answer": answer}}, None
+
+
+        def parse_retrospective_assessment(raw_text: str):
+            parsed = parse_structured_output(raw_text, ["confidence", "likely_correct"], "RetrospectiveAssessment")
+            if parsed.warning:
+                return None, parsed.warning
+            payload = parsed.data or {{}}
+            confidence = clamp_unit_interval(payload.get("confidence"))
+            likely_correct = coerce_bool(payload.get("likely_correct"))
+            reason = coerce_string(payload.get("reason")) or ""
+            if confidence is None or likely_correct is None:
+                message = "RetrospectiveAssessment contained invalid confidence or likely_correct"
+                logging.warning(message)
+                return None, message
+            return {{"confidence": confidence, "likely_correct": likely_correct, "reason": reason}}, None
+
+
+        def parse_revised_answer(raw_text: str):
+            parsed = parse_structured_output(raw_text, ["final_answer"], "RevisedAnswer")
+            if parsed.warning:
+                return None, parsed.warning
+            payload = parsed.data or {{}}
+            final_answer = coerce_string(payload.get("final_answer"))
+            reason = coerce_string(payload.get("reason")) or ""
+            if final_answer is None:
+                message = "RevisedAnswer contained invalid final_answer"
+                logging.warning(message)
+                return None, message
+            return {{"final_answer": final_answer, "reason": reason}}, None
+
+
+        def make_unscorable_row(row, model_response=None, warning=None, extras=None):
+            payload = {{
+                "item_id": row["item_id"],
+                "subtype": row["subtype"],
+                "expected_action": row["expected_action"],
+                "item_score": None,
+                "unscorable": True,
+                "warning": warning,
+                "model_response": model_response,
+            }}
+            if extras:
+                payload.update(extras)
+            return payload
+
+
+        def aggregate_result_score(runs) -> float:
+            result_df = pd.json_normalize(runs.as_dataframe()["result"])
+            if "unscorable" not in result_df.columns:
+                return float(result_df["item_score"].mean())
+            scored_df = result_df[~result_df["unscorable"].fillna(False)]
+            if scored_df.empty:
+                logging.warning("All rows were marked unscorable; returning 0.0 for the aggregate.")
+                return 0.0
+            return float(scored_df["item_score"].mean())
 
 
         def judge_once(prompt: str, response_text: str, gold_answer, variant_name: str, variant_guidance: str) -> JudgeVote:
@@ -250,7 +360,7 @@ def _boundary_code(spec_name: str, single_name: str, published_name: str) -> str
             judge_complete = judge_fields_complete(expected_action, judged, has_gold_answer)
             is_answer_correct = judged.answer_correct if has_gold_answer else None
             clarification_score = judged.clarification_quality if judged.clarification_quality is not None else 0.0
-            item_score = 0.0
+            item_score = None
             if judge_complete:
                 item_score = compute_boundary_score(expected_action, predicted_action, clarification_score, is_answer_correct)
             return {{
@@ -260,6 +370,7 @@ def _boundary_code(spec_name: str, single_name: str, published_name: str) -> str
                 "predicted_action": predicted_action,
                 "judge_complete": judge_complete,
                 "judge_warning": judged.warning,
+                "unscorable": not judge_complete,
                 "judge_votes": [vote.label for vote in votes],
                 "is_answer_correct": is_answer_correct,
                 "clarification_quality": clarification_score,
@@ -305,7 +416,7 @@ def _boundary_code(spec_name: str, single_name: str, published_name: str) -> str
                     timeout=TIMEOUT_SECONDS,
                     remove_run_files=True,
                 )
-            return float(runs.as_dataframe()["result"].str.get("item_score").mean())
+            return aggregate_result_score(runs)
 
         preview_df = preview_{spec_name}(kbench.llm, df, limit=5)
         run = score_{spec_name}.run(kbench.llm, df)
@@ -320,23 +431,19 @@ def _prospective_code(spec_name: str, single_name: str, published_name: str) -> 
     return dedent(
         f"""
 
-        @dataclass
-        class ProspectiveResponse:
-            predicted_success: float
-            answer: str
-
-        def score_row(row, response: ProspectiveResponse, judged: JudgeVote, votes) -> dict:
+        def score_row(row, response: dict, judged: JudgeVote, votes, response_warning=None) -> dict:
             expected_action = row["expected_action"]
             predicted_action = judged.label
-            predicted_success = max(0.0, min(1.0, float(response.predicted_success)))
+            predicted_success = max(0.0, min(1.0, float(response["predicted_success"])))
             has_gold_answer = bool(row.get("gold_answer"))
             judge_complete = judge_fields_complete(expected_action, judged, has_gold_answer)
             is_answer_correct = judged.answer_correct if has_gold_answer else None
             clarification_score = judged.clarification_quality if judged.clarification_quality is not None else 0.0
             outcome_score = 0.0
             calibration_score = 0.0
-            item_score = 0.0
-            if judge_complete:
+            item_score = None
+            unscorable = bool(response_warning) or not judge_complete
+            if not unscorable:
                 outcome_score = compute_boundary_score(expected_action, predicted_action, clarification_score, is_answer_correct)
                 calibration_score = 1.0 - abs(predicted_success - outcome_score)
                 item_score = 0.5 * outcome_score + 0.5 * calibration_score
@@ -347,12 +454,14 @@ def _prospective_code(spec_name: str, single_name: str, published_name: str) -> 
                 "predicted_action": predicted_action,
                 "predicted_success": predicted_success,
                 "judge_complete": judge_complete,
+                "unscorable": unscorable,
+                "warning": response_warning or judged.warning,
                 "judge_warning": judged.warning,
                 "outcome_score": outcome_score,
                 "calibration_score": calibration_score,
                 "judge_votes": [vote.label for vote in votes],
                 "item_score": item_score,
-                "model_response": response.answer,
+                "model_response": response["answer"],
             }}
 
         def preview_{spec_name}(llm, df, limit: int = 5):
@@ -371,19 +480,23 @@ def _prospective_code(spec_name: str, single_name: str, published_name: str) -> 
             result_df = pd.json_normalize(eval_df["result"])
             overlap_columns = [c for c in result_df.columns if c in sample.columns]
             preview_df = pd.concat([sample.reset_index(drop=True), result_df.drop(columns=overlap_columns, errors="ignore")], axis=1)
-            print(preview_df[["item_id", "subtype", "expected_action", "predicted_action", "judge_complete", "judge_warning", "predicted_success", "outcome_score", "calibration_score", "item_score", "model_response"]].to_string(index=False))
+            print(preview_df[["item_id", "subtype", "expected_action", "predicted_action", "unscorable", "warning", "judge_complete", "predicted_success", "outcome_score", "calibration_score", "item_score", "model_response"]].to_string(index=False))
             return preview_df
 
         @kbench.task(name="{single_name}", description="Evaluates one prospective monitoring item.", store_task=False)
         def solve_single_item(llm, item_id: str, subtype: str, prompt: str, expected_action: str, gold_answer, required_missing_fields, accepted_diagnoses, difficulty: str, notes) -> dict:
-            response = llm.prompt(
-                "Before answering, estimate your probability of giving an appropriate and correct response. Return structured output with predicted_success between 0.0 and 1.0 and then your answer.\\n\\n"
-                f"Prompt: {{build_prompt(prompt)}}",
-                schema=ProspectiveResponse,
-            )
-            judged, votes = ensemble_classify(prompt, response.answer, gold_answer)
             row = {{"item_id": item_id, "subtype": subtype, "expected_action": expected_action, "gold_answer": gold_answer, "required_missing_fields": required_missing_fields, "accepted_diagnoses": accepted_diagnoses, "difficulty": difficulty, "notes": notes}}
-            return score_row(row, response, judged, votes)
+            raw_response = llm.prompt(
+                "Before answering, estimate your probability of giving an appropriate and correct response. "
+                "Return JSON only with keys predicted_success and answer. "
+                "Do not include <think> blocks, hidden reasoning, markdown fences, or any text before or after the JSON.\\n\\n"
+                f"Prompt: {{build_prompt(prompt)}}"
+            )
+            response, response_warning = parse_prospective_response(raw_response)
+            if response is None:
+                return make_unscorable_row(row, model_response=raw_response, warning=response_warning, extras={{"predicted_action": None}})
+            judged, votes = ensemble_classify(prompt, response["answer"], gold_answer)
+            return score_row(row, response, judged, votes, response_warning=response_warning)
 
         @kbench.task(name="{published_name}", description="Batched family task for prospective monitoring.")
         def score_{spec_name}(llm, df) -> float:
@@ -397,7 +510,7 @@ def _prospective_code(spec_name: str, single_name: str, published_name: str) -> 
                     timeout=TIMEOUT_SECONDS,
                     remove_run_files=True,
                 )
-            return float(runs.as_dataframe()["result"].str.get("item_score").mean())
+            return aggregate_result_score(runs)
 
         preview_df = preview_{spec_name}(kbench.llm, df, limit=5)
         run = score_{spec_name}.run(kbench.llm, df)
@@ -412,16 +525,10 @@ def _retrospective_code(spec_name: str, single_name: str, published_name: str) -
     return dedent(
         f"""
 
-        @dataclass
-        class RetrospectiveAssessment:
-            confidence: float
-            likely_correct: bool
-            reason: str
-
-        def score_row(row, response_text: str, assessment: RetrospectiveAssessment, judged: JudgeVote, votes) -> dict:
+        def score_row(row, response_text: str, assessment: dict, judged: JudgeVote, votes, assessment_warning=None) -> dict:
             expected_action = row["expected_action"]
             predicted_action = judged.label
-            confidence = max(0.0, min(1.0, float(assessment.confidence)))
+            confidence = max(0.0, min(1.0, float(assessment["confidence"])))
             has_gold_answer = bool(row.get("gold_answer"))
             judge_complete = judge_fields_complete(expected_action, judged, has_gold_answer)
             is_answer_correct = judged.answer_correct if has_gold_answer else None
@@ -429,11 +536,12 @@ def _retrospective_code(spec_name: str, single_name: str, published_name: str) -
             outcome_score = 0.0
             calibration_score = 0.0
             boolean_alignment = 0.0
-            item_score = 0.0
-            if judge_complete:
+            item_score = None
+            unscorable = bool(assessment_warning) or not judge_complete
+            if not unscorable:
                 outcome_score = compute_boundary_score(expected_action, predicted_action, clarification_score, is_answer_correct)
                 calibration_score = 1.0 - abs(confidence - outcome_score)
-                boolean_alignment = 1.0 if bool(assessment.likely_correct) == (outcome_score >= 0.75) else 0.0
+                boolean_alignment = 1.0 if bool(assessment["likely_correct"]) == (outcome_score >= 0.75) else 0.0
                 item_score = 0.6 * calibration_score + 0.4 * boolean_alignment
             return {{
                 "item_id": row["item_id"],
@@ -441,8 +549,10 @@ def _retrospective_code(spec_name: str, single_name: str, published_name: str) -
                 "expected_action": expected_action,
                 "predicted_action": predicted_action,
                 "confidence": confidence,
-                "likely_correct": bool(assessment.likely_correct),
+                "likely_correct": bool(assessment["likely_correct"]),
                 "judge_complete": judge_complete,
+                "unscorable": unscorable,
+                "warning": assessment_warning or judged.warning,
                 "judge_warning": judged.warning,
                 "outcome_score": outcome_score,
                 "calibration_score": calibration_score,
@@ -467,21 +577,25 @@ def _retrospective_code(spec_name: str, single_name: str, published_name: str) -
             result_df = pd.json_normalize(eval_df["result"])
             overlap_columns = [c for c in result_df.columns if c in sample.columns]
             preview_df = pd.concat([sample.reset_index(drop=True), result_df.drop(columns=overlap_columns, errors="ignore")], axis=1)
-            print(preview_df[["item_id", "subtype", "expected_action", "predicted_action", "judge_complete", "judge_warning", "confidence", "likely_correct", "outcome_score", "item_score", "model_response"]].to_string(index=False))
+            print(preview_df[["item_id", "subtype", "expected_action", "predicted_action", "unscorable", "warning", "judge_complete", "confidence", "likely_correct", "outcome_score", "item_score", "model_response"]].to_string(index=False))
             return preview_df
 
         @kbench.task(name="{single_name}", description="Evaluates one retrospective monitoring item.", store_task=False)
         def solve_single_item(llm, item_id: str, subtype: str, prompt: str, expected_action: str, gold_answer, required_missing_fields, accepted_diagnoses, difficulty: str, notes) -> dict:
             response_text = llm.prompt(build_prompt(prompt))
             judged, votes = ensemble_classify(prompt, response_text, gold_answer)
-            assessment = llm.prompt(
-                "You have already answered a prompt. Assess how likely your answer was appropriate and correct. Return confidence between 0.0 and 1.0, a boolean likely_correct, and a short reason.\\n\\n"
-                f"Prompt: {{prompt}}\\n\\n"
-                f"Your answer: {{response_text}}",
-                schema=RetrospectiveAssessment,
-            )
             row = {{"item_id": item_id, "subtype": subtype, "expected_action": expected_action, "gold_answer": gold_answer, "required_missing_fields": required_missing_fields, "accepted_diagnoses": accepted_diagnoses, "difficulty": difficulty, "notes": notes}}
-            return score_row(row, response_text, assessment, judged, votes)
+            raw_assessment = llm.prompt(
+                "You have already answered a prompt. Assess how likely your answer was appropriate and correct. "
+                "Return JSON only with keys confidence, likely_correct, and reason. "
+                "Do not include <think> blocks, hidden reasoning, markdown fences, or any text before or after the JSON.\\n\\n"
+                f"Prompt: {{prompt}}\\n\\n"
+                f"Your answer: {{response_text}}"
+            )
+            assessment, assessment_warning = parse_retrospective_assessment(raw_assessment)
+            if assessment is None:
+                return make_unscorable_row(row, model_response=response_text, warning=assessment_warning, extras={{"predicted_action": judged.label, "judge_warning": judged.warning}})
+            return score_row(row, response_text, assessment, judged, votes, assessment_warning=assessment_warning)
 
         @kbench.task(name="{published_name}", description="Batched family task for retrospective monitoring.")
         def score_{spec_name}(llm, df) -> float:
@@ -495,7 +609,7 @@ def _retrospective_code(spec_name: str, single_name: str, published_name: str) -
                     timeout=TIMEOUT_SECONDS,
                     remove_run_files=True,
                 )
-            return float(runs.as_dataframe()["result"].str.get("item_score").mean())
+            return aggregate_result_score(runs)
 
         preview_df = preview_{spec_name}(kbench.llm, df, limit=5)
         run = score_{spec_name}.run(kbench.llm, df)
@@ -510,11 +624,6 @@ def _self_correction_code(spec_name: str, single_name: str, published_name: str)
     return dedent(
         f"""
 
-        @dataclass
-        class RevisedAnswer:
-            final_answer: str
-            reason: str
-
         def score_row(row, initial_response: str, revised_response: str, initial_judged: JudgeVote, initial_votes, final_judged: JudgeVote, final_votes) -> dict:
             expected_action = row["expected_action"]
             has_gold_answer = bool(row.get("gold_answer"))
@@ -524,9 +633,9 @@ def _self_correction_code(spec_name: str, single_name: str, published_name: str)
             final_correct = final_judged.answer_correct if has_gold_answer else None
             initial_quality = initial_judged.clarification_quality if initial_judged.clarification_quality is not None else 0.0
             final_quality = final_judged.clarification_quality if final_judged.clarification_quality is not None else 0.0
-            initial_score = 0.0
-            final_score = 0.0
-            item_score = 0.0
+            initial_score = None
+            final_score = None
+            item_score = None
             if initial_complete:
                 initial_score = compute_boundary_score(expected_action, initial_judged.label, initial_quality, initial_correct)
             if final_complete:
@@ -542,6 +651,7 @@ def _self_correction_code(spec_name: str, single_name: str, published_name: str)
                 "expected_action": expected_action,
                 "initial_action": initial_judged.label,
                 "final_action": final_judged.label,
+                "unscorable": not (initial_complete and final_complete),
                 "initial_judge_complete": initial_complete,
                 "final_judge_complete": final_complete,
                 "initial_judge_warning": initial_judged.warning,
@@ -571,22 +681,26 @@ def _self_correction_code(spec_name: str, single_name: str, published_name: str)
             result_df = pd.json_normalize(eval_df["result"])
             overlap_columns = [c for c in result_df.columns if c in sample.columns]
             preview_df = pd.concat([sample.reset_index(drop=True), result_df.drop(columns=overlap_columns, errors="ignore")], axis=1)
-            print(preview_df[["item_id", "subtype", "expected_action", "initial_action", "final_action", "initial_judge_complete", "final_judge_complete", "initial_score", "final_score", "item_score"]].to_string(index=False))
+            print(preview_df[["item_id", "subtype", "expected_action", "initial_action", "final_action", "unscorable", "initial_judge_complete", "final_judge_complete", "initial_score", "final_score", "item_score"]].to_string(index=False))
             return preview_df
 
         @kbench.task(name="{single_name}", description="Evaluates one self-correction item.", store_task=False)
         def solve_single_item(llm, item_id: str, subtype: str, prompt: str, expected_action: str, gold_answer, required_missing_fields, accepted_diagnoses, difficulty: str, notes) -> dict:
             initial_response = llm.prompt(build_prompt(prompt))
             initial_judged, initial_votes = ensemble_classify(prompt, initial_response, gold_answer)
-            revision = llm.prompt(
-                "Review your previous answer. If it should be improved, revise it. If it should stay the same, restate the best final answer. Return structured output with final_answer and a short reason.\\n\\n"
-                f"Prompt: {{prompt}}\\n\\n"
-                f"Previous answer: {{initial_response}}",
-                schema=RevisedAnswer,
-            )
-            final_response = revision.final_answer
-            final_judged, final_votes = ensemble_classify(prompt, final_response, gold_answer)
             row = {{"item_id": item_id, "subtype": subtype, "expected_action": expected_action, "gold_answer": gold_answer, "required_missing_fields": required_missing_fields, "accepted_diagnoses": accepted_diagnoses, "difficulty": difficulty, "notes": notes}}
+            raw_revision = llm.prompt(
+                "Review your previous answer. If it should be improved, revise it. If it should stay the same, restate the best final answer. "
+                "Return JSON only with keys final_answer and reason. "
+                "Do not include <think> blocks, hidden reasoning, markdown fences, or any text before or after the JSON.\\n\\n"
+                f"Prompt: {{prompt}}\\n\\n"
+                f"Previous answer: {{initial_response}}"
+            )
+            revision, revision_warning = parse_revised_answer(raw_revision)
+            if revision is None:
+                return make_unscorable_row(row, model_response=initial_response, warning=revision_warning, extras={{"initial_action": initial_judged.label, "final_action": None}})
+            final_response = revision["final_answer"]
+            final_judged, final_votes = ensemble_classify(prompt, final_response, gold_answer)
             return score_row(row, initial_response, final_response, initial_judged, initial_votes, final_judged, final_votes)
 
         @kbench.task(name="{published_name}", description="Batched family task for self-correction.")
@@ -601,7 +715,7 @@ def _self_correction_code(spec_name: str, single_name: str, published_name: str)
                     timeout=TIMEOUT_SECONDS,
                     remove_run_files=True,
                 )
-            return float(runs.as_dataframe()["result"].str.get("item_score").mean())
+            return aggregate_result_score(runs)
 
         preview_df = preview_{spec_name}(kbench.llm, df, limit=5)
         run = score_{spec_name}.run(kbench.llm, df)
