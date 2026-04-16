@@ -116,6 +116,13 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
             return text[: limit - 3] + "..."
 
 
+        def short_repr(value: Any, limit: int = 400) -> str:
+            text = repr(value)
+            if len(text) <= limit:
+                return text
+            return text[: limit - 3] + "..."
+
+
         def warning_message(context: str, prompt: Any = None, output: Any = None, extra: Any = None) -> str:
             parts = [context]
             if prompt is not None:
@@ -287,12 +294,19 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
             ))
                 return parse_judge_vote(judged_text)
             except Exception as exc:
+                reprobe = "not_run"
+                if judged_text:
+                    try:
+                        extract_json_object(judged_text)
+                        reprobe = "local_reprobe_ok"
+                    except Exception as reprobe_exc:
+                        reprobe = f"local_reprobe_failed: {{reprobe_exc}}"
                 return invalid_judge_vote(
                     warning_message(
                         f"Judge parsing failed for variant '{{variant_name}}'",
                         prompt=prompt,
                         output=judged_text,
-                        extra=exc,
+                        extra=f"exc={{exc}} | len={{len(judged_text)}} | repr={{short_repr(judged_text)}} | {{reprobe}}",
                     )
                 )
 
