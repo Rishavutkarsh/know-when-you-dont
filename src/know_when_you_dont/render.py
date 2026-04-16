@@ -27,6 +27,7 @@ df = pd.read_json(DATASET_PATH, lines=True)
 class BehaviorLabel:
     label: str
     reason: str
+    clarification_quality: float
 
 
 VALID_LABELS = {{"answer", "clarify", "abstain", "challenge", "hedge"}}
@@ -51,6 +52,10 @@ def classify_behavior(prompt: str, response_text: str) -> BehaviorLabel:
         "- If the model says it cannot physically do something, lacks access, or cannot carry out the task, label abstain, not challenge.\\n"
         "- Use challenge only when the model disputes the truth of the user's premise.\\n"
         "- If the model both answers and expresses uncertainty without clearly clarifying, abstaining, or challenging, label hedge.\\n\\n"
+        "Also provide clarification_quality as a float from 0.0 to 1.0:\\n"
+        "- Use 1.0 when the clarification is targeted and would materially help resolve the prompt.\\n"
+        "- Use 0.5 when the clarification is somewhat useful but generic or incomplete.\\n"
+        "- Use 0.0 when there is no clarification attempt or it is not useful.\\n\\n"
         "Return concise structured output.\\n\\n"
         f"User prompt: {{prompt}}\\n\\n"
         f"Model response: {{response_text}}",
@@ -59,35 +64,11 @@ def classify_behavior(prompt: str, response_text: str) -> BehaviorLabel:
     label = normalize_text(judged.label)
     if label not in VALID_LABELS:
         label = "hedge"
-    return BehaviorLabel(label=label, reason=judged.reason.strip())
-
-
-def clarification_quality(row, response_text: str) -> float:
-    required_fields = row.get("required_missing_fields") or []
-    if not required_fields:
-        return 1.0
-    lowered = response_text.lower()
-    hits = sum(1 for field in required_fields if field.lower() in lowered)
-    if hits == 0:
-        if "?" in response_text:
-            return 0.25
-        if any(
-            phrase in lowered
-            for phrase in [
-                "could you provide",
-                "can you provide",
-                "please provide",
-                "need more information",
-                "need the details",
-                "share the",
-                "what time",
-                "what date",
-                "what city",
-                "which",
-            ]
-        ):
-            return 0.25
-    return hits / len(required_fields)
+    quality = judged.clarification_quality
+    if quality is None:
+        quality = 0.0
+    quality = max(0.0, min(1.0, float(quality)))
+    return BehaviorLabel(label=label, reason=judged.reason.strip(), clarification_quality=quality)
 
 
 def is_correct_answer(row, response_text: str) -> bool:
@@ -102,7 +83,7 @@ def score_row(row, response_text: str, judged: BehaviorLabel) -> dict:
     predicted_action = judged.label
     item_score = 0.0
     is_answer_correct = None
-    clarification_score = 0.0
+    clarification_score = judged.clarification_quality
 
     if expected_action == "answer":
         is_answer_correct = is_correct_answer(row, response_text)
@@ -111,7 +92,6 @@ def score_row(row, response_text: str, judged: BehaviorLabel) -> dict:
             item_score = 0.5
     elif expected_action == "clarify":
         if predicted_action == "clarify":
-            clarification_score = clarification_quality(row, response_text)
             item_score = 0.5 + 0.5 * clarification_score
         elif predicted_action == "abstain":
             item_score = 0.4
@@ -121,7 +101,6 @@ def score_row(row, response_text: str, judged: BehaviorLabel) -> dict:
         if predicted_action == "abstain":
             item_score = 1.0
         elif predicted_action == "clarify":
-            clarification_score = clarification_quality(row, response_text)
             item_score = 0.4 + 0.2 * clarification_score
         elif predicted_action == "hedge":
             item_score = 0.5
