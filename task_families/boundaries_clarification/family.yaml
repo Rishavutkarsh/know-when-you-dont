@@ -7,9 +7,9 @@ description: >
 published_task_name: kwyd_boundaries_clarification
 notebook_name: kwyd_boundaries_clarification.ipynb
 subtypes:
-  - ambiguity
-  - missing_information
-  - clarification_needed
-  - false_premise
-  - sufficient_request
+  - clarify_ambiguity
+  - clarify_missing_detail
+  - abstain_underdetermined
+  - challenge_false_premise
+  - answer_safe_control
 primary_metric: overall_score

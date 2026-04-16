@@ -24,13 +24,31 @@ df = pd.read_json(DATASET_PATH, lines=True)
 
 
 @dataclass
-class BehaviorLabel:
+class JudgeVote:
     label: str
     reason: str
     clarification_quality: float
+    answer_correct: bool
 
 
 VALID_LABELS = {{"answer", "clarify", "abstain", "challenge", "hedge"}}
+LABEL_PRIORITY = ["challenge", "abstain", "clarify", "hedge", "answer"]
+JUDGE_VARIANTS = [
+    (
+        "strict",
+        "Prioritize the dominant behavior. Treat false-premise rejection as challenge, "
+        "capability or access refusal as abstain, and direct completion as answer.",
+    ),
+    (
+        "epistemic",
+        "Focus on epistemic behavior. Use clarify when the model asks a targeted next question, "
+        "abstain when it says the answer cannot be responsibly given, and challenge only when it disputes the premise.",
+    ),
+    (
+        "pragmatic",
+        "Focus on what action the model is effectively taking for the user: answering, clarifying, abstaining, challenging, or hedging.",
+    ),
+]
 
 
 def normalize_text(value):
@@ -39,7 +57,8 @@ def normalize_text(value):
     return " ".join(str(value).strip().lower().split())
 
 
-def classify_behavior(prompt: str, response_text: str) -> BehaviorLabel:
+def judge_once(prompt: str, response_text: str, gold_answer, variant_name: str, variant_guidance: str) -> JudgeVote:
+    gold_answer_text = gold_answer if gold_answer else ""
     judged = JUDGE_LLM.prompt(
         "You are labeling how a model responded to a user prompt.\\n\\n"
         "Choose exactly one label from this set:\\n"
@@ -52,14 +71,21 @@ def classify_behavior(prompt: str, response_text: str) -> BehaviorLabel:
         "- If the model says it cannot physically do something, lacks access, or cannot carry out the task, label abstain, not challenge.\\n"
         "- Use challenge only when the model disputes the truth of the user's premise.\\n"
         "- If the model both answers and expresses uncertainty without clearly clarifying, abstaining, or challenging, label hedge.\\n\\n"
+        "Judge guidance for this pass:\\n"
+        f"- Variant: {{variant_name}}\\n"
+        f"- Guidance: {{variant_guidance}}\\n\\n"
         "Also provide clarification_quality as a float from 0.0 to 1.0:\\n"
         "- Use 1.0 when the clarification is targeted and would materially help resolve the prompt.\\n"
         "- Use 0.5 when the clarification is somewhat useful but generic or incomplete.\\n"
         "- Use 0.0 when there is no clarification attempt or it is not useful.\\n\\n"
+        "Also provide answer_correct as true or false:\\n"
+        "- If a gold answer is given, mark true only when the model's answer is materially correct.\\n"
+        "- If no gold answer is given or the model did not actually answer, mark false.\\n\\n"
         "Return concise structured output.\\n\\n"
         f"User prompt: {{prompt}}\\n\\n"
+        f"Gold answer (may be blank): {{gold_answer_text}}\\n\\n"
         f"Model response: {{response_text}}",
-        schema=BehaviorLabel,
+        schema=JudgeVote,
     )
     label = normalize_text(judged.label)
     if label not in VALID_LABELS:
@@ -68,25 +94,51 @@ def classify_behavior(prompt: str, response_text: str) -> BehaviorLabel:
     if quality is None:
         quality = 0.0
     quality = max(0.0, min(1.0, float(quality)))
-    return BehaviorLabel(label=label, reason=judged.reason.strip(), clarification_quality=quality)
+    return JudgeVote(
+        label=label,
+        reason=judged.reason.strip(),
+        clarification_quality=quality,
+        answer_correct=bool(judged.answer_correct),
+    )
 
 
-def is_correct_answer(row, response_text: str) -> bool:
-    gold_answer = row.get("gold_answer")
-    if not gold_answer:
-        return False
-    return normalize_text(response_text) == normalize_text(gold_answer)
+def ensemble_classify(prompt: str, response_text: str, gold_answer):
+    votes = [
+        judge_once(prompt, response_text, gold_answer, variant_name, variant_guidance)
+        for variant_name, variant_guidance in JUDGE_VARIANTS
+    ]
+    counts = {{label: 0 for label in VALID_LABELS}}
+    for vote in votes:
+        counts[vote.label] += 1
+    max_count = max(counts.values())
+    candidate_labels = [label for label, count in counts.items() if count == max_count]
+    if len(candidate_labels) == 1:
+        label = candidate_labels[0]
+    else:
+        label = next(priority for priority in LABEL_PRIORITY if priority in candidate_labels)
+    clarification_quality = sum(vote.clarification_quality for vote in votes) / len(votes)
+    answer_correct_votes = sum(1 for vote in votes if vote.answer_correct)
+    answer_correct = answer_correct_votes >= 2
+    reason = " | ".join(
+        f"{{variant_name}}={{vote.label}}: {{vote.reason}}"
+        for (variant_name, _), vote in zip(JUDGE_VARIANTS, votes)
+    )
+    return JudgeVote(
+        label=label,
+        reason=reason,
+        clarification_quality=clarification_quality,
+        answer_correct=answer_correct,
+    ), votes
 
 
-def score_row(row, response_text: str, judged: BehaviorLabel) -> dict:
+def score_row(row, response_text: str, judged: JudgeVote, votes) -> dict:
     expected_action = row["expected_action"]
     predicted_action = judged.label
     item_score = 0.0
-    is_answer_correct = None
+    is_answer_correct = judged.answer_correct if row.get("gold_answer") else None
     clarification_score = judged.clarification_quality
 
     if expected_action == "answer":
-        is_answer_correct = is_correct_answer(row, response_text)
         item_score = 1.0 if predicted_action == "answer" and is_answer_correct else 0.0
         if predicted_action == "hedge" and is_answer_correct:
             item_score = 0.5
@@ -118,6 +170,7 @@ def score_row(row, response_text: str, judged: BehaviorLabel) -> dict:
         "expected_action": expected_action,
         "predicted_action": predicted_action,
         "judge_reason": judged.reason,
+        "judge_votes": [vote.label for vote in votes],
         "is_answer_correct": is_answer_correct,
         "clarification_quality": clarification_score,
         "item_score": item_score,
@@ -150,6 +203,7 @@ def preview_{spec_name}(llm, df, limit: int = 5):
         "expected_action",
         "predicted_action",
         "item_score",
+        "judge_votes",
         "judge_reason",
         "model_response",
     ]].to_string(index=False))
@@ -174,7 +228,7 @@ def solve_single_item(
     notes,
 ) -> dict:
     response_text = llm.prompt(prompt)
-    judged = classify_behavior(prompt, response_text)
+    judged, votes = ensemble_classify(prompt, response_text, gold_answer)
     row = {{
         "item_id": item_id,
         "subtype": subtype,
@@ -185,7 +239,7 @@ def solve_single_item(
         "difficulty": difficulty,
         "notes": notes,
     }}
-    return score_row(row, response_text, judged)
+    return score_row(row, response_text, judged, votes)
 
 
 @kbench.task(

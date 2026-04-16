@@ -20,6 +20,11 @@ class TaskSubtype(str, Enum):
     CLARIFICATION_NEEDED = "clarification_needed"
     FALSE_PREMISE = "false_premise"
     SUFFICIENT_REQUEST = "sufficient_request"
+    CLARIFY_AMBIGUITY = "clarify_ambiguity"
+    CLARIFY_MISSING_DETAIL = "clarify_missing_detail"
+    ABSTAIN_UNDERDETERMINED = "abstain_underdetermined"
+    CHALLENGE_FALSE_PREMISE = "challenge_false_premise"
+    ANSWER_SAFE_CONTROL = "answer_safe_control"
 
 
 class ModelResponse(BaseModel):
