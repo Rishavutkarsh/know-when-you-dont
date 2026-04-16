@@ -17,6 +17,7 @@ import pandas as pd
 from dataclasses import dataclass
 
 DATASET_PATH = "/kaggle/input/datasets/rishavutkarsh/tasks-boundary-classification/datasets/boundaries_clarification/items.jsonl"
+JUDGE_LLM = kbench.judge_llm
 
 
 df = pd.read_json(DATASET_PATH, lines=True)
@@ -38,7 +39,7 @@ def normalize_text(value):
 
 
 def classify_behavior(prompt: str, response_text: str) -> BehaviorLabel:
-    judged = kbench.judge_llm.prompt(
+    judged = JUDGE_LLM.prompt(
         "You are labeling how a model responded to a user prompt.\\n\\n"
         "Choose exactly one label from this set:\\n"
         "- answer: the model directly answers the prompt\\n"
@@ -122,6 +123,33 @@ def score_row(row, response_text: str, judged: BehaviorLabel) -> dict:
     }}
 
 
+def preview_{spec_name}(llm, df, limit: int = 5):
+    sample = df.head(limit).copy()
+    with kbench.client.enable_cache():
+        runs = solve_single_item.evaluate(
+            stop_condition=lambda runs: len(runs) == sample.shape[0],
+            max_attempts=1,
+            llm=[llm],
+            evaluation_data=sample,
+            n_jobs=4,
+            timeout=120,
+            remove_run_files=True,
+        )
+    eval_df = runs.as_dataframe()
+    result_df = pd.json_normalize(eval_df["result"])
+    preview_df = pd.concat([sample.reset_index(drop=True), result_df], axis=1)
+    print(preview_df[[
+        "item_id",
+        "subtype",
+        "expected_action",
+        "predicted_action",
+        "item_score",
+        "judge_reason",
+        "model_response",
+    ]].to_string(index=False))
+    return preview_df
+
+
 @kbench.task(
     name="{single_name}",
     description="Evaluates one metacognitive boundaries item.",
@@ -175,7 +203,9 @@ def score_{spec_name}(llm, df) -> float:
     return overall_score
 
 
-score_{spec_name}.run(kbench.llm, df.head(3))
+preview_df = preview_{spec_name}(kbench.llm, df, limit=5)
+run = score_{spec_name}.run(kbench.llm, df)
+print(run.result)
 
 %choose score_{spec_name}
 """
