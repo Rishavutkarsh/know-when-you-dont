@@ -139,7 +139,7 @@ def solve_single_item(
     name="{published_name}",
     description="Batched family task for ambiguity, missing information, and clarification control.",
 )
-def score_{spec_name}(llm, df) -> dict:
+def score_{spec_name}(llm, df) -> float:
     with kbench.client.enable_cache():
         runs = solve_single_item.evaluate(
             stop_condition=lambda runs: len(runs) == df.shape[0],
@@ -153,16 +153,7 @@ def score_{spec_name}(llm, df) -> dict:
     eval_df = runs.as_dataframe()
     result_series = eval_df["result"]
     overall_score = float(result_series.str.get("item_score").mean())
-    subtype_scores = {{
-        subtype: float(group.str.get("item_score").mean())
-        for subtype, group in result_series.groupby(eval_df["subtype"])
-    }}
-    return {{
-        "overall_score": overall_score,
-        "passed": overall_score >= 0.7,
-        "subtype_scores": subtype_scores,
-        "guess_rate": float((result_series.str.get("predicted_action") == "answer").mean()),
-    }}
+    return overall_score
 
 
 schema_smoke_test(kbench.llm)
