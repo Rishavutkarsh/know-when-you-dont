@@ -44,9 +44,13 @@ def classify_behavior(prompt: str, response_text: str) -> BehaviorLabel:
         "Choose exactly one label from this set:\\n"
         "- answer: the model directly answers the prompt\\n"
         "- clarify: the model asks for missing information or disambiguation before answering\\n"
-        "- abstain: the model says it cannot answer from the information given\\n"
-        "- challenge: the model explicitly rejects or questions a false premise in the prompt\\n"
+        "- abstain: the model says it cannot answer, cannot perform the task, lacks access, or declines because the information or capability is insufficient\\n"
+        "- challenge: the model explicitly says the user's premise or factual assumption is wrong, false, or mistaken\\n"
         "- hedge: the model expresses uncertainty or gives a tentative answer without clearly clarifying, abstaining, or challenging\\n\\n"
+        "Important distinctions:\\n"
+        "- If the model says it cannot physically do something, lacks access, or cannot carry out the task, label abstain, not challenge.\\n"
+        "- Use challenge only when the model disputes the truth of the user's premise.\\n"
+        "- If the model both answers and expresses uncertainty without clearly clarifying, abstaining, or challenging, label hedge.\\n\\n"
         "Return concise structured output.\\n\\n"
         f"User prompt: {{prompt}}\\n\\n"
         f"Model response: {{response_text}}",
@@ -64,6 +68,25 @@ def clarification_quality(row, response_text: str) -> float:
         return 1.0
     lowered = response_text.lower()
     hits = sum(1 for field in required_fields if field.lower() in lowered)
+    if hits == 0:
+        if "?" in response_text:
+            return 0.25
+        if any(
+            phrase in lowered
+            for phrase in [
+                "could you provide",
+                "can you provide",
+                "please provide",
+                "need more information",
+                "need the details",
+                "share the",
+                "what time",
+                "what date",
+                "what city",
+                "which",
+            ]
+        ):
+            return 0.25
     return hits / len(required_fields)
 
 
@@ -137,7 +160,11 @@ def preview_{spec_name}(llm, df, limit: int = 5):
         )
     eval_df = runs.as_dataframe()
     result_df = pd.json_normalize(eval_df["result"])
-    preview_df = pd.concat([sample.reset_index(drop=True), result_df], axis=1)
+    overlap_columns = [column for column in result_df.columns if column in sample.columns]
+    preview_df = pd.concat(
+        [sample.reset_index(drop=True), result_df.drop(columns=overlap_columns, errors="ignore")],
+        axis=1,
+    )
     print(preview_df[[
         "item_id",
         "subtype",

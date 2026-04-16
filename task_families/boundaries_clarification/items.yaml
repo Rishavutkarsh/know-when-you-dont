@@ -17,11 +17,11 @@ items:
 
   - item_id: bc_003
     subtype: ambiguity
-    prompt: "Please place the signed contract in the folder next to the blue binder on the shelf above it."
+    prompt: "In the note 'Place the signed contract in the folder next to the blue binder on the shelf above it,' what does 'it' refer to?"
     expected_action: clarify
     accepted_diagnoses: ["ambiguous", "spatial ambiguity", "unclear referent"]
     difficulty: hard
-    notes: "The spatial reference 'it' is underspecified."
+    notes: "The spatial reference 'it' is underspecified even in the quoted instruction."
 
   - item_id: bc_004
     subtype: missing_information
