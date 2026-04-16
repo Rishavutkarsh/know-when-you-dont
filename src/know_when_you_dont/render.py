@@ -107,33 +107,6 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
             return None
 
 
-        def short_text(value: Any, limit: int = 400) -> str:
-            if value is None:
-                return ""
-            text = " ".join(str(value).split())
-            if len(text) <= limit:
-                return text
-            return text[: limit - 3] + "..."
-
-
-        def short_repr(value: Any, limit: int = 400) -> str:
-            text = repr(value)
-            if len(text) <= limit:
-                return text
-            return text[: limit - 3] + "..."
-
-
-        def warning_message(context: str, prompt: Any = None, output: Any = None, extra: Any = None) -> str:
-            parts = [context]
-            if prompt is not None:
-                parts.append("prompt=" + short_text(prompt))
-            if output is not None:
-                parts.append("output=" + short_text(output))
-            if extra is not None:
-                parts.append("extra=" + short_text(extra))
-            return " | ".join(parts)
-
-
         def extract_json_object(raw_text: str) -> dict[str, Any]:
             if raw_text is None:
                 raise ValueError("Judge returned no content")
@@ -178,12 +151,12 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
             try:
                 payload = extract_json_object(raw_text)
             except Exception as exc:
-                message = warning_message(f"{{context}} parsing failed", output=raw_text, extra=exc)
+                message = f"{{context}} parsing failed: {{exc}}"
                 logging.warning(message)
                 return ParsedStructuredOutput(data=None, warning=message)
             missing_fields = [field for field in required_fields if field not in payload]
             if missing_fields:
-                message = warning_message(f"{{context}} missing required fields: {{missing_fields}}", output=raw_text)
+                message = f"{{context}} missing required fields: {{missing_fields}}"
                 logging.warning(message)
                 return ParsedStructuredOutput(data=payload, warning=message)
             return ParsedStructuredOutput(data=payload, warning=None)
@@ -197,7 +170,7 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
             predicted_success = clamp_unit_interval(payload.get("predicted_success"))
             answer = coerce_string(payload.get("answer"))
             if predicted_success is None or answer is None:
-                message = warning_message("ProspectiveResponse contained invalid predicted_success or answer", output=raw_text)
+                message = "ProspectiveResponse contained invalid predicted_success or answer"
                 logging.warning(message)
                 return None, message
             return {{"predicted_success": predicted_success, "answer": answer}}, None
@@ -212,7 +185,7 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
             likely_correct = coerce_bool(payload.get("likely_correct"))
             reason = coerce_string(payload.get("reason")) or ""
             if confidence is None or likely_correct is None:
-                message = warning_message("RetrospectiveAssessment contained invalid confidence or likely_correct", output=raw_text)
+                message = "RetrospectiveAssessment contained invalid confidence or likely_correct"
                 logging.warning(message)
                 return None, message
             return {{"confidence": confidence, "likely_correct": likely_correct, "reason": reason}}, None
@@ -226,7 +199,7 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
             final_answer = coerce_string(payload.get("final_answer"))
             reason = coerce_string(payload.get("reason")) or ""
             if final_answer is None:
-                message = warning_message("RevisedAnswer contained invalid final_answer", output=raw_text)
+                message = "RevisedAnswer contained invalid final_answer"
                 logging.warning(message)
                 return None, message
             return {{"final_answer": final_answer, "reason": reason}}, None
@@ -260,9 +233,8 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
 
         def judge_once(prompt: str, response_text: str, gold_answer, variant_name: str, variant_guidance: str) -> JudgeVote:
             gold_answer_text = gold_answer if gold_answer else ""
-            judged_text = ""
             try:
-                judged_text = str(JUDGE_LLM.prompt(
+                judged_text = JUDGE_LLM.prompt(
                 "You are labeling how a model responded to a user prompt.\\n\\n"
                 "Choose exactly one label from this set:\\n"
                 "- answer: the model directly answers the prompt\\n"
@@ -291,23 +263,11 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
                 f"User prompt: {{prompt}}\\n\\n"
                 f"Gold answer (may be blank): {{gold_answer_text}}\\n\\n"
                 f"Model response: {{response_text}}",
-            ))
+            )
                 return parse_judge_vote(judged_text)
             except Exception as exc:
-                reprobe = "not_run"
-                if judged_text:
-                    try:
-                        extract_json_object(judged_text)
-                        reprobe = "local_reprobe_ok"
-                    except Exception as reprobe_exc:
-                        reprobe = f"local_reprobe_failed: {{reprobe_exc}}"
                 return invalid_judge_vote(
-                    warning_message(
-                        f"Judge parsing failed for variant '{{variant_name}}'",
-                        prompt=prompt,
-                        output=judged_text,
-                        extra=f"exc={{exc}} | len={{len(judged_text)}} | repr={{short_repr(judged_text)}} | {{reprobe}}",
-                    )
+                    f"Judge parsing failed for variant '{{variant_name}}': {{exc}}"
                 )
 
 
@@ -423,7 +383,7 @@ def _boundary_code(spec_name: str, single_name: str, published_name: str) -> str
 
         @kbench.task(name="{single_name}", description="Evaluates one metacognitive boundaries item.", store_task=False)
         def solve_single_item(llm, item_id: str, subtype: str, prompt: str, expected_action: str, gold_answer, required_missing_fields, accepted_diagnoses, difficulty: str, notes) -> dict:
-            response_text = str(llm.prompt(build_prompt(prompt)))
+            response_text = llm.prompt(build_prompt(prompt))
             judged, votes = ensemble_classify(prompt, response_text, gold_answer)
             row = {{"item_id": item_id, "subtype": subtype, "expected_action": expected_action, "gold_answer": gold_answer, "required_missing_fields": required_missing_fields, "accepted_diagnoses": accepted_diagnoses, "difficulty": difficulty, "notes": notes}}
             return score_row(row, response_text, judged, votes)
@@ -510,12 +470,12 @@ def _prospective_code(spec_name: str, single_name: str, published_name: str) -> 
         @kbench.task(name="{single_name}", description="Evaluates one prospective monitoring item.", store_task=False)
         def solve_single_item(llm, item_id: str, subtype: str, prompt: str, expected_action: str, gold_answer, required_missing_fields, accepted_diagnoses, difficulty: str, notes) -> dict:
             row = {{"item_id": item_id, "subtype": subtype, "expected_action": expected_action, "gold_answer": gold_answer, "required_missing_fields": required_missing_fields, "accepted_diagnoses": accepted_diagnoses, "difficulty": difficulty, "notes": notes}}
-            raw_response = str(llm.prompt(
+            raw_response = llm.prompt(
                 "Before answering, estimate your probability of giving an appropriate and correct response. "
                 "Return JSON only with keys predicted_success and answer. "
                 "Do not include <think> blocks, hidden reasoning, markdown fences, or any text before or after the JSON.\\n\\n"
                 f"Prompt: {{build_prompt(prompt)}}"
-            ))
+            )
             response, response_warning = parse_prospective_response(raw_response)
             if response is None:
                 return make_unscorable_row(row, model_response=raw_response, warning=response_warning, extras={{"predicted_action": None}})
@@ -606,16 +566,16 @@ def _retrospective_code(spec_name: str, single_name: str, published_name: str) -
 
         @kbench.task(name="{single_name}", description="Evaluates one retrospective monitoring item.", store_task=False)
         def solve_single_item(llm, item_id: str, subtype: str, prompt: str, expected_action: str, gold_answer, required_missing_fields, accepted_diagnoses, difficulty: str, notes) -> dict:
-            response_text = str(llm.prompt(build_prompt(prompt)))
+            response_text = llm.prompt(build_prompt(prompt))
             judged, votes = ensemble_classify(prompt, response_text, gold_answer)
             row = {{"item_id": item_id, "subtype": subtype, "expected_action": expected_action, "gold_answer": gold_answer, "required_missing_fields": required_missing_fields, "accepted_diagnoses": accepted_diagnoses, "difficulty": difficulty, "notes": notes}}
-            raw_assessment = str(llm.prompt(
+            raw_assessment = llm.prompt(
                 "You have already answered a prompt. Assess how likely your answer was appropriate and correct. "
                 "Return JSON only with keys confidence, likely_correct, and reason. "
                 "Do not include <think> blocks, hidden reasoning, markdown fences, or any text before or after the JSON.\\n\\n"
                 f"Prompt: {{prompt}}\\n\\n"
                 f"Your answer: {{response_text}}"
-            ))
+            )
             assessment, assessment_warning = parse_retrospective_assessment(raw_assessment)
             if assessment is None:
                 return make_unscorable_row(row, model_response=response_text, warning=assessment_warning, extras={{"predicted_action": judged.label, "judge_warning": judged.warning}})
@@ -710,16 +670,16 @@ def _self_correction_code(spec_name: str, single_name: str, published_name: str)
 
         @kbench.task(name="{single_name}", description="Evaluates one self-correction item.", store_task=False)
         def solve_single_item(llm, item_id: str, subtype: str, prompt: str, expected_action: str, gold_answer, required_missing_fields, accepted_diagnoses, difficulty: str, notes) -> dict:
-            initial_response = str(llm.prompt(build_prompt(prompt)))
+            initial_response = llm.prompt(build_prompt(prompt))
             initial_judged, initial_votes = ensemble_classify(prompt, initial_response, gold_answer)
             row = {{"item_id": item_id, "subtype": subtype, "expected_action": expected_action, "gold_answer": gold_answer, "required_missing_fields": required_missing_fields, "accepted_diagnoses": accepted_diagnoses, "difficulty": difficulty, "notes": notes}}
-            raw_revision = str(llm.prompt(
+            raw_revision = llm.prompt(
                 "Review your previous answer. If it should be improved, revise it. If it should stay the same, restate the best final answer. "
                 "Return JSON only with keys final_answer and reason. "
                 "Do not include <think> blocks, hidden reasoning, markdown fences, or any text before or after the JSON.\\n\\n"
                 f"Prompt: {{prompt}}\\n\\n"
                 f"Previous answer: {{initial_response}}"
-            ))
+            )
             revision, revision_warning = parse_revised_answer(raw_revision)
             if revision is None:
                 return make_unscorable_row(row, model_response=initial_response, warning=revision_warning, extras={{"initial_action": initial_judged.label, "final_action": None}})
