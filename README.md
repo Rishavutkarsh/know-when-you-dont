@@ -34,6 +34,11 @@ The repo currently includes five families built on the same shared task set:
    - revision after reflection
    - asks the model to review and improve its own response
 
+Protocol split:
+
+- `Boundary` is the only family with both `natural` and `elicited` variants.
+- `Prospective Monitoring`, `Retrospective Monitoring`, and `Self-Correction` are inherently elicited by design because the prompt itself asks for a self-assessment or revision.
+
 ## Shared Task Design
 
 The current shared pool is centered on boundary management and includes five subtypes:
@@ -70,6 +75,46 @@ The judge path is intentionally lightweight:
 - each notebook now exposes a single `JUDGE_MODEL_NAME` constant so a named judge can be pinned in one place if Kaggle exposes explicit judge selection
 
 This makes large Kaggle runs much more stable.
+
+## Grader Contract
+
+The grader is meant to stay stable even when the tasks change. The shared contract is:
+
+- `input fields`
+  - `item_id`
+  - `subtype`
+  - `prompt`
+  - `expected_action`
+  - optional `gold_answer`
+- `judge fields`
+  - `label`
+  - optional `clarification_quality`
+  - optional `answer_correct`
+- `scoring rule`
+  - compute a family-specific score from the judge output and the item truth
+- `unscorable`
+  - if judge parsing fails or a required field is missing for that item type, the row is marked `unscorable`
+  - `unscorable` rows are excluded from the aggregate instead of being treated as real zero-score failures
+
+Family-specific grading:
+
+- `Boundary`
+  - score the observed action: `answer`, `clarify`, `abstain`, `challenge`, or `hedge`
+  - give partial credit for near-misses
+
+- `Prospective Monitoring`
+  - score the boundary outcome first
+  - then compare predicted confidence to that outcome
+  - final score combines outcome quality and calibration quality
+
+- `Retrospective Monitoring`
+  - score the boundary outcome after the answer
+  - then compare post-answer confidence and self-assessed correctness to the outcome
+
+- `Self-Correction`
+  - score the initial response
+  - score the revised response
+  - reward improvement and penalize regression
 
 ## Repo Layout
 

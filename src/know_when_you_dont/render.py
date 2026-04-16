@@ -32,6 +32,7 @@ def _common_code(dataset_path: str, prompt_condition: str, judge_model_name: str
         JUDGE_MODEL_NAME = {judge_literal}
         N_JOBS = 2
         TIMEOUT_SECONDS = 600
+        LOGGED_WARNINGS: set[str] = set()
 
 
         def resolve_judge_llm():
@@ -146,9 +147,7 @@ def _common_code(dataset_path: str, prompt_condition: str, judge_model_name: str
             if label not in VALID_LABELS:
                 label = "hedge"
             clarification_quality = clamp_unit_interval(payload.get("clarification_quality"))
-            answer_correct = payload.get("answer_correct")
-            if answer_correct is not None:
-                answer_correct = bool(answer_correct)
+            answer_correct = coerce_bool(payload.get("answer_correct"))
             return JudgeVote(
                 label=label,
                 clarification_quality=clarification_quality,
@@ -157,7 +156,9 @@ def _common_code(dataset_path: str, prompt_condition: str, judge_model_name: str
 
 
         def invalid_judge_vote(message: str) -> JudgeVote:
-            logging.warning(message)
+            if message not in LOGGED_WARNINGS:
+                logging.warning(message)
+                LOGGED_WARNINGS.add(message)
             return JudgeVote(
                 label="hedge",
                 clarification_quality=None,
@@ -171,12 +172,16 @@ def _common_code(dataset_path: str, prompt_condition: str, judge_model_name: str
                 payload = extract_json_object(raw_text)
             except Exception as exc:
                 message = f"{{context}} parsing failed: {{exc}}"
-                logging.warning(message)
+                if message not in LOGGED_WARNINGS:
+                    logging.warning(message)
+                    LOGGED_WARNINGS.add(message)
                 return ParsedStructuredOutput(data=None, warning=message)
             missing_fields = [field for field in required_fields if field not in payload]
             if missing_fields:
                 message = f"{{context}} missing required fields: {{missing_fields}}"
-                logging.warning(message)
+                if message not in LOGGED_WARNINGS:
+                    logging.warning(message)
+                    LOGGED_WARNINGS.add(message)
                 return ParsedStructuredOutput(data=payload, warning=message)
             return ParsedStructuredOutput(data=payload, warning=None)
 
@@ -275,7 +280,10 @@ def _common_code(dataset_path: str, prompt_condition: str, judge_model_name: str
                 "Also provide answer_correct as true or false:\\n"
                 "- If a gold answer is given, mark true only when the model's answer is materially correct.\\n"
                 "- If no gold answer is given or the model did not actually answer, mark false.\\n\\n"
-                "Return JSON only with keys label, clarification_quality, and answer_correct.\\n\\n"
+                "Return exactly one JSON object and nothing else.\\n"
+                "Do not wrap it in markdown fences. Do not add commentary. Start the response with {{ and end with }}.\\n"
+                "Use this exact shape:\\n"
+                "{{\\\"label\\\":\\\"answer\\\",\\\"clarification_quality\\\":0.0,\\\"answer_correct\\\":false}}\\n\\n"
                 f"User prompt: {{prompt}}\\n\\n"
                 f"Gold answer (may be blank): {{gold_answer_text}}\\n\\n"
                 f"Model response: {{response_text}}",
