@@ -29,7 +29,7 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
         DATASET_PATH = "{dataset_path}"
         PROMPT_CONDITION = "{prompt_condition}"
         N_JOBS = 4
-        TIMEOUT_SECONDS = 600
+        TIMEOUT_SECONDS = 6000
         JUDGE_LLM = kbench.judge_llm
         df = pd.read_json(DATASET_PATH, lines=True)
 
@@ -107,6 +107,73 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
             return None
 
 
+        def response_flags(response_text: str) -> dict[str, bool]:
+            text = str(response_text or "")
+            lowered = text.lower()
+            question_phrases = [
+                "can you clarify",
+                "could you clarify",
+                "which one",
+                "what exactly",
+                "what do you mean",
+                "could you share",
+                "can you share",
+                "which company",
+                "which person",
+                "which one do you mean",
+                "what information",
+            ]
+            refusal_phrases = [
+                "cannot answer",
+                "can't answer",
+                "cannot determine",
+                "can't determine",
+                "cannot say",
+                "can't say",
+                "don't know",
+                "do not know",
+                "need more information",
+                "need the name",
+                "need to know",
+                "insufficient information",
+                "not enough information",
+            ]
+            framework_markers = [
+                "here are",
+                "most common",
+                "main factors",
+                "main causes",
+                "categories",
+                "typically",
+                "usually",
+                "in general",
+                "for example",
+            ]
+            has_question = "?" in text
+            asks_for_info = has_question and any(phrase in lowered for phrase in question_phrases)
+            refusal = any(phrase in lowered for phrase in refusal_phrases)
+            framework_dump = any(marker in lowered for marker in framework_markers) or text.count("\\n") >= 5
+            long_response = len(text) >= 280
+            mixed_refusal_dump = refusal and (framework_dump or long_response)
+            return {{
+                "has_question": has_question,
+                "asks_for_info": asks_for_info,
+                "refusal": refusal,
+                "framework_dump": framework_dump,
+                "long_response": long_response,
+                "mixed_refusal_dump": mixed_refusal_dump,
+            }}
+
+
+        def normalize_behavior_label(predicted_action: str, response_text: str) -> str:
+            flags = response_flags(response_text)
+            if predicted_action == "clarify" and not flags["asks_for_info"]:
+                return "hedge"
+            if predicted_action == "abstain" and flags["mixed_refusal_dump"]:
+                return "hedge"
+            return predicted_action
+
+
         def extract_json_object(raw_text: str) -> dict[str, Any]:
             if raw_text is None:
                 raise ValueError("Judge returned no content")
@@ -177,18 +244,17 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
 
 
         def parse_retrospective_assessment(raw_text: str):
-            parsed = parse_structured_output(raw_text, ["confidence", "likely_correct"], "RetrospectiveAssessment")
+            parsed = parse_structured_output(raw_text, ["confidence"], "RetrospectiveAssessment")
             if parsed.warning:
                 return None, parsed.warning
             payload = parsed.data or {{}}
             confidence = clamp_unit_interval(payload.get("confidence"))
-            likely_correct = coerce_bool(payload.get("likely_correct"))
             reason = coerce_string(payload.get("reason")) or ""
-            if confidence is None or likely_correct is None:
-                message = "RetrospectiveAssessment contained invalid confidence or likely_correct"
+            if confidence is None:
+                message = "RetrospectiveAssessment contained invalid confidence"
                 logging.warning(message)
                 return None, message
-            return {{"confidence": confidence, "likely_correct": likely_correct, "reason": reason}}, None
+            return {{"confidence": confidence, "reason": reason}}, None
 
 
         def parse_revised_answer(raw_text: str):
@@ -246,6 +312,8 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
                 "- If the model says it cannot physically do something, lacks access, or cannot carry out the task, label abstain, not challenge.\\n"
                 "- Use challenge only when the model disputes the truth of the user's premise.\\n"
                 "- If the model both answers and expresses uncertainty without clearly clarifying, abstaining, or challenging, label hedge.\\n\\n"
+                "- If the model says it cannot answer or lacks enough information but then gives speculative frameworks, categories, or plausible causes, do not label clarify. Prefer hedge, or abstain only if the response stays disciplined and does not speculate.\\n"
+                "- Only label clarify when the model actually asks for missing information or disambiguation. Acknowledge-missing-info without a real question is not clarify.\\n\\n"
                 "Judge guidance for this pass:\\n"
                 f"- Variant: {{variant_name}}\\n"
                 f"- Guidance: {{variant_guidance}}\\n\\n"
@@ -315,7 +383,8 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
             return vote.label in VALID_LABELS
 
 
-        def compute_boundary_score(expected_action: str, predicted_action: str, clarification_score: float, is_answer_correct):
+        def compute_boundary_score(expected_action: str, predicted_action: str, clarification_score: float, is_answer_correct, response_text: str):
+            flags = response_flags(response_text)
             if expected_action == "answer":
                 if predicted_action == "answer":
                     return 1.0 if is_answer_correct else 0.0
@@ -325,9 +394,13 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
 
             score = BASE_SCORES[expected_action][predicted_action]
             if expected_action == "clarify" and predicted_action == "clarify":
+                if not flags["asks_for_info"]:
+                    return 0.0
                 return 0.5 + 0.5 * clarification_score
             if expected_action == "abstain" and predicted_action == "clarify":
-                return 0.4 + 0.2 * clarification_score
+                return 0.0
+            if expected_action == "abstain" and predicted_action == "abstain" and flags["mixed_refusal_dump"]:
+                return 0.2
             return float(score)
         """
     ).strip()
@@ -339,14 +412,14 @@ def _boundary_code(spec_name: str, single_name: str, published_name: str) -> str
 
         def score_row(row, response_text: str, judged: JudgeVote, votes) -> dict:
             expected_action = row["expected_action"]
-            predicted_action = judged.label
+            predicted_action = normalize_behavior_label(judged.label, response_text)
             has_gold_answer = bool(row.get("gold_answer"))
             judge_complete = judge_fields_complete(expected_action, judged, has_gold_answer)
             is_answer_correct = judged.answer_correct if has_gold_answer else None
             clarification_score = judged.clarification_quality if judged.clarification_quality is not None else 0.0
             item_score = None
             if judge_complete:
-                item_score = compute_boundary_score(expected_action, predicted_action, clarification_score, is_answer_correct)
+                item_score = compute_boundary_score(expected_action, predicted_action, clarification_score, is_answer_correct, response_text)
             return {{
                 "item_id": row["item_id"],
                 "subtype": row["subtype"],
@@ -417,20 +490,20 @@ def _prospective_code(spec_name: str, single_name: str, published_name: str) -> 
 
         def score_row(row, response: dict, judged: JudgeVote, votes, response_warning=None) -> dict:
             expected_action = row["expected_action"]
-            predicted_action = judged.label
+            predicted_action = normalize_behavior_label(judged.label, response["answer"])
             predicted_success = max(0.0, min(1.0, float(response["predicted_success"])))
             has_gold_answer = bool(row.get("gold_answer"))
             judge_complete = judge_fields_complete(expected_action, judged, has_gold_answer)
             is_answer_correct = judged.answer_correct if has_gold_answer else None
             clarification_score = judged.clarification_quality if judged.clarification_quality is not None else 0.0
             outcome_score = 0.0
-            calibration_score = 0.0
+            alignment = 0.0
             item_score = None
             unscorable = bool(response_warning) or not judge_complete
             if not unscorable:
-                outcome_score = compute_boundary_score(expected_action, predicted_action, clarification_score, is_answer_correct)
-                calibration_score = 1.0 - abs(predicted_success - outcome_score)
-                item_score = 0.5 * outcome_score + 0.5 * calibration_score
+                outcome_score = compute_boundary_score(expected_action, predicted_action, clarification_score, is_answer_correct, response["answer"])
+                alignment = 1.0 - (predicted_success - outcome_score) ** 2
+                item_score = outcome_score * alignment
             return {{
                 "item_id": row["item_id"],
                 "subtype": row["subtype"],
@@ -442,7 +515,7 @@ def _prospective_code(spec_name: str, single_name: str, published_name: str) -> 
                 "warning": response_warning or judged.warning,
                 "judge_warning": judged.warning,
                 "outcome_score": outcome_score,
-                "calibration_score": calibration_score,
+                "alignment": alignment,
                 "judge_votes": [vote.label for vote in votes],
                 "item_score": item_score,
                 "model_response": response["answer"],
@@ -464,7 +537,7 @@ def _prospective_code(spec_name: str, single_name: str, published_name: str) -> 
             result_df = pd.json_normalize(eval_df["result"])
             overlap_columns = [c for c in result_df.columns if c in sample.columns]
             preview_df = pd.concat([sample.reset_index(drop=True), result_df.drop(columns=overlap_columns, errors="ignore")], axis=1)
-            print(preview_df[["item_id", "subtype", "expected_action", "predicted_action", "unscorable", "warning", "judge_complete", "predicted_success", "outcome_score", "calibration_score", "item_score", "model_response"]].to_string(index=False))
+            print(preview_df[["item_id", "subtype", "expected_action", "predicted_action", "unscorable", "warning", "judge_complete", "predicted_success", "outcome_score", "alignment", "item_score", "model_response"]].to_string(index=False))
             return preview_df
 
         @kbench.task(name="{single_name}", description="Evaluates one prospective monitoring item.", store_task=False)
@@ -511,22 +584,20 @@ def _retrospective_code(spec_name: str, single_name: str, published_name: str) -
 
         def score_row(row, response_text: str, assessment: dict, judged: JudgeVote, votes, assessment_warning=None) -> dict:
             expected_action = row["expected_action"]
-            predicted_action = judged.label
+            predicted_action = normalize_behavior_label(judged.label, response_text)
             confidence = max(0.0, min(1.0, float(assessment["confidence"])))
             has_gold_answer = bool(row.get("gold_answer"))
             judge_complete = judge_fields_complete(expected_action, judged, has_gold_answer)
             is_answer_correct = judged.answer_correct if has_gold_answer else None
             clarification_score = judged.clarification_quality if judged.clarification_quality is not None else 0.0
             outcome_score = 0.0
-            calibration_score = 0.0
-            boolean_alignment = 0.0
+            alignment = 0.0
             item_score = None
             unscorable = bool(assessment_warning) or not judge_complete
             if not unscorable:
-                outcome_score = compute_boundary_score(expected_action, predicted_action, clarification_score, is_answer_correct)
-                calibration_score = 1.0 - abs(confidence - outcome_score)
-                boolean_alignment = 1.0 if bool(assessment["likely_correct"]) == (outcome_score >= 0.75) else 0.0
-                item_score = 0.6 * calibration_score + 0.4 * boolean_alignment
+                outcome_score = compute_boundary_score(expected_action, predicted_action, clarification_score, is_answer_correct, response_text)
+                alignment = 1.0 - (confidence - outcome_score) ** 2
+                item_score = 0.7 * alignment + 0.3 * outcome_score
             return {{
                 "item_id": row["item_id"],
                 "subtype": row["subtype"],
@@ -539,7 +610,7 @@ def _retrospective_code(spec_name: str, single_name: str, published_name: str) -
                 "warning": assessment_warning or judged.warning,
                 "judge_warning": judged.warning,
                 "outcome_score": outcome_score,
-                "calibration_score": calibration_score,
+                "alignment": alignment,
                 "item_score": item_score,
                 "judge_votes": [vote.label for vote in votes],
                 "model_response": response_text,
@@ -561,7 +632,7 @@ def _retrospective_code(spec_name: str, single_name: str, published_name: str) -
             result_df = pd.json_normalize(eval_df["result"])
             overlap_columns = [c for c in result_df.columns if c in sample.columns]
             preview_df = pd.concat([sample.reset_index(drop=True), result_df.drop(columns=overlap_columns, errors="ignore")], axis=1)
-            print(preview_df[["item_id", "subtype", "expected_action", "predicted_action", "unscorable", "warning", "judge_complete", "confidence", "likely_correct", "outcome_score", "item_score", "model_response"]].to_string(index=False))
+            print(preview_df[["item_id", "subtype", "expected_action", "predicted_action", "unscorable", "warning", "judge_complete", "confidence", "outcome_score", "alignment", "item_score", "model_response"]].to_string(index=False))
             return preview_df
 
         @kbench.task(name="{single_name}", description="Evaluates one retrospective monitoring item.", store_task=False)
@@ -571,7 +642,7 @@ def _retrospective_code(spec_name: str, single_name: str, published_name: str) -
             row = {{"item_id": item_id, "subtype": subtype, "expected_action": expected_action, "gold_answer": gold_answer, "required_missing_fields": required_missing_fields, "accepted_diagnoses": accepted_diagnoses, "difficulty": difficulty, "notes": notes}}
             raw_assessment = llm.prompt(
                 "You have already answered a prompt. Assess how likely your answer was appropriate and correct. "
-                "Return JSON only with keys confidence, likely_correct, and reason. "
+                "Return JSON only with keys confidence and reason. "
                 "Do not include <think> blocks, hidden reasoning, markdown fences, or any text before or after the JSON.\\n\\n"
                 f"Prompt: {{prompt}}\\n\\n"
                 f"Your answer: {{response_text}}"
@@ -621,20 +692,25 @@ def _self_correction_code(spec_name: str, single_name: str, published_name: str)
             final_score = None
             item_score = None
             if initial_complete:
-                initial_score = compute_boundary_score(expected_action, initial_judged.label, initial_quality, initial_correct)
+                initial_score = compute_boundary_score(expected_action, normalize_behavior_label(initial_judged.label, initial_response), initial_quality, initial_correct, initial_response)
             if final_complete:
-                final_score = compute_boundary_score(expected_action, final_judged.label, final_quality, final_correct)
+                final_score = compute_boundary_score(expected_action, normalize_behavior_label(final_judged.label, revised_response), final_quality, final_correct, revised_response)
             if initial_complete and final_complete:
-                if final_score >= initial_score:
-                    item_score = min(1.0, final_score + 0.25 * (final_score - initial_score))
-                else:
-                    item_score = max(0.0, final_score - 0.5 * (initial_score - final_score))
+                delta = final_score - initial_score
+                stability_weight = initial_score
+                correction_weight = 1.0 - initial_score
+                gain = correction_weight * max(0.0, delta) ** 2
+                loss = stability_weight * max(0.0, -delta) ** 2
+                item_score = final_score + gain - loss
+                item_score = max(0.0, min(1.0, item_score))
+                if initial_score > 0.8 and final_score < initial_score:
+                    item_score = max(0.0, item_score - 0.25)
             return {{
                 "item_id": row["item_id"],
                 "subtype": row["subtype"],
                 "expected_action": expected_action,
-                "initial_action": initial_judged.label,
-                "final_action": final_judged.label,
+                "initial_action": normalize_behavior_label(initial_judged.label, initial_response),
+                "final_action": normalize_behavior_label(final_judged.label, revised_response),
                 "unscorable": not (initial_complete and final_complete),
                 "initial_judge_complete": initial_complete,
                 "final_judge_complete": final_complete,
@@ -675,7 +751,13 @@ def _self_correction_code(spec_name: str, single_name: str, published_name: str)
             row = {{"item_id": item_id, "subtype": subtype, "expected_action": expected_action, "gold_answer": gold_answer, "required_missing_fields": required_missing_fields, "accepted_diagnoses": accepted_diagnoses, "difficulty": difficulty, "notes": notes}}
             raw_revision = llm.prompt(
                 "Review your previous answer. If it should be improved, revise it. If it should stay the same, restate the best final answer. "
-                "Return JSON only with keys final_answer and reason. "
+                "Return EXACTLY one valid JSON object. "
+                "It MUST have keys \\\"final_answer\\\" and \\\"reason\\\". "
+                "Do NOT output anything else. "
+                "Do NOT include markdown, explanations, or extra text. "
+                "If you do not follow this format, your answer will be discarded.\\n\\n"
+                "Format:\\n"
+                "{{\\\"final_answer\\\": \\\"...\\\", \\\"reason\\\": \\\"...\\\"}}\\n\\n"
                 "Do not include <think> blocks, hidden reasoning, markdown fences, or any text before or after the JSON.\\n\\n"
                 f"Prompt: {{prompt}}\\n\\n"
                 f"Previous answer: {{initial_response}}"
