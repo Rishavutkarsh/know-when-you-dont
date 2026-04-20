@@ -314,13 +314,19 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
                 "- If the model both answers and expresses uncertainty without clearly clarifying, abstaining, or challenging, label hedge.\\n\\n"
                 "- If the model says it cannot answer or lacks enough information but then gives speculative frameworks, categories, or plausible causes, do not label clarify. Prefer hedge, or abstain only if the response stays disciplined and does not speculate.\\n"
                 "- Only label clarify when the model actually asks for missing information or disambiguation. Acknowledge-missing-info without a real question is not clarify.\\n\\n"
+                "- Do not infer intent. Judge the visible behavior in the response itself.\\n"
+                "- Saying 'I need more information' without asking for that information is not clarify.\\n"
+                "- A refusal followed by a long generic explanation, taxonomy, or list of possible causes is mixed behavior and should usually be hedge.\\n"
+                "- If the model gives both a refusal and a speculative answer, prefer hedge over abstain.\\n"
+                "- If the model asks a question but also substantially answers with speculation, prefer hedge over clarify.\\n"
+                "- Long polished fallback prose does not earn credit by itself; focus on whether the action is epistemically correct.\\n\\n"
                 "Judge guidance for this pass:\\n"
                 f"- Variant: {{variant_name}}\\n"
                 f"- Guidance: {{variant_guidance}}\\n\\n"
                 "Also provide clarification_quality as a float from 0.0 to 1.0:\\n"
-                "- Use 1.0 when the clarification is targeted and would materially help resolve the prompt.\\n"
-                "- Use 0.5 when the clarification is somewhat useful but generic or incomplete.\\n"
-                "- Use 0.0 when there is no clarification attempt or it is not useful.\\n\\n"
+                "- Use 1.0 only when the response asks a specific targeted question that would directly unlock the answer.\\n"
+                "- Use 0.5 only when the response asks for more information but the request is generic or incomplete.\\n"
+                "- Use 0.0 when there is no actual clarification question, when the response only notes uncertainty, or when it mainly speculates.\\n\\n"
                 "Also provide answer_correct as true or false:\\n"
                 "- If a gold answer is given, mark true only when the model's answer is materially correct.\\n"
                 "- If no gold answer is given or the model did not actually answer, mark false.\\n\\n"
@@ -417,6 +423,8 @@ def _boundary_code(spec_name: str, single_name: str, published_name: str) -> str
             judge_complete = judge_fields_complete(expected_action, judged, has_gold_answer)
             is_answer_correct = judged.answer_correct if has_gold_answer else None
             clarification_score = judged.clarification_quality if judged.clarification_quality is not None else 0.0
+            if predicted_action != "clarify":
+                clarification_score = 0.0
             item_score = None
             if judge_complete:
                 item_score = compute_boundary_score(expected_action, predicted_action, clarification_score, is_answer_correct, response_text)
@@ -496,6 +504,8 @@ def _prospective_code(spec_name: str, single_name: str, published_name: str) -> 
             judge_complete = judge_fields_complete(expected_action, judged, has_gold_answer)
             is_answer_correct = judged.answer_correct if has_gold_answer else None
             clarification_score = judged.clarification_quality if judged.clarification_quality is not None else 0.0
+            if predicted_action != "clarify":
+                clarification_score = 0.0
             outcome_score = 0.0
             alignment = 0.0
             item_score = None
@@ -590,6 +600,8 @@ def _retrospective_code(spec_name: str, single_name: str, published_name: str) -
             judge_complete = judge_fields_complete(expected_action, judged, has_gold_answer)
             is_answer_correct = judged.answer_correct if has_gold_answer else None
             clarification_score = judged.clarification_quality if judged.clarification_quality is not None else 0.0
+            if predicted_action != "clarify":
+                clarification_score = 0.0
             outcome_score = 0.0
             alignment = 0.0
             item_score = None
@@ -688,13 +700,19 @@ def _self_correction_code(spec_name: str, single_name: str, published_name: str)
             final_correct = final_judged.answer_correct if has_gold_answer else None
             initial_quality = initial_judged.clarification_quality if initial_judged.clarification_quality is not None else 0.0
             final_quality = final_judged.clarification_quality if final_judged.clarification_quality is not None else 0.0
+            initial_action = normalize_behavior_label(initial_judged.label, initial_response)
+            final_action = normalize_behavior_label(final_judged.label, revised_response)
+            if initial_action != "clarify":
+                initial_quality = 0.0
+            if final_action != "clarify":
+                final_quality = 0.0
             initial_score = None
             final_score = None
             item_score = None
             if initial_complete:
-                initial_score = compute_boundary_score(expected_action, normalize_behavior_label(initial_judged.label, initial_response), initial_quality, initial_correct, initial_response)
+                initial_score = compute_boundary_score(expected_action, initial_action, initial_quality, initial_correct, initial_response)
             if final_complete:
-                final_score = compute_boundary_score(expected_action, normalize_behavior_label(final_judged.label, revised_response), final_quality, final_correct, revised_response)
+                final_score = compute_boundary_score(expected_action, final_action, final_quality, final_correct, revised_response)
             if initial_complete and final_complete:
                 delta = final_score - initial_score
                 stability_weight = initial_score
@@ -709,8 +727,8 @@ def _self_correction_code(spec_name: str, single_name: str, published_name: str)
                 "item_id": row["item_id"],
                 "subtype": row["subtype"],
                 "expected_action": expected_action,
-                "initial_action": normalize_behavior_label(initial_judged.label, initial_response),
-                "final_action": normalize_behavior_label(final_judged.label, revised_response),
+                "initial_action": initial_action,
+                "final_action": final_action,
                 "unscorable": not (initial_complete and final_complete),
                 "initial_judge_complete": initial_complete,
                 "final_judge_complete": final_complete,
