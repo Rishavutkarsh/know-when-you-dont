@@ -616,7 +616,6 @@ def _retrospective_code(spec_name: str, single_name: str, published_name: str) -
                 "expected_action": expected_action,
                 "predicted_action": predicted_action,
                 "confidence": confidence,
-                "likely_correct": bool(assessment["likely_correct"]),
                 "judge_complete": judge_complete,
                 "unscorable": unscorable,
                 "warning": assessment_warning or judged.warning,
