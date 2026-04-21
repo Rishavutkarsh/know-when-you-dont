@@ -314,6 +314,15 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
             return payload
 
 
+        def safe_prompt(llm, prompt_text: str, context: str):
+            try:
+                return llm.prompt(prompt_text), None
+            except Exception as exc:
+                message = f"{{context}} failed: {{exc}}"
+                logging.warning(message)
+                return None, message
+
+
         def aggregate_result_score(runs) -> float:
             result_df = pd.json_normalize(runs.as_dataframe()["result"])
             if "unscorable" not in result_df.columns:
@@ -497,9 +506,11 @@ def _boundary_code(spec_name: str, single_name: str, published_name: str) -> str
 
         @kbench.task(name="{single_name}", description="Evaluates one metacognitive boundaries item.", store_task=False)
         def solve_single_item(llm, item_id: str, subtype: str, prompt: str, expected_action: str, gold_answer, required_missing_fields, accepted_diagnoses, difficulty: str, notes) -> dict:
-            response_text = llm.prompt(build_prompt(prompt))
-            judged, votes = ensemble_classify(prompt, response_text, gold_answer)
             row = {{"item_id": item_id, "subtype": subtype, "expected_action": expected_action, "gold_answer": gold_answer, "required_missing_fields": required_missing_fields, "accepted_diagnoses": accepted_diagnoses, "difficulty": difficulty, "notes": notes}}
+            response_text, response_warning = safe_prompt(llm, build_prompt(prompt), f"Primary response for item {{item_id}}")
+            if response_text is None:
+                return make_unscorable_row(row, warning=response_warning, extras={{"predicted_action": None, "judge_warning": None}})
+            judged, votes = ensemble_classify(prompt, response_text, gold_answer)
             return score_row(row, response_text, judged, votes)
 
         @kbench.task(name="{published_name}", description="Batched family task for metacognitive boundary management.")
@@ -586,12 +597,16 @@ def _prospective_code(spec_name: str, single_name: str, published_name: str) -> 
         @kbench.task(name="{single_name}", description="Evaluates one prospective monitoring item.", store_task=False)
         def solve_single_item(llm, item_id: str, subtype: str, prompt: str, expected_action: str, gold_answer, required_missing_fields, accepted_diagnoses, difficulty: str, notes) -> dict:
             row = {{"item_id": item_id, "subtype": subtype, "expected_action": expected_action, "gold_answer": gold_answer, "required_missing_fields": required_missing_fields, "accepted_diagnoses": accepted_diagnoses, "difficulty": difficulty, "notes": notes}}
-            raw_response = llm.prompt(
+            raw_response, response_warning = safe_prompt(
+                llm,
                 "Before answering, estimate your probability of giving an appropriate and correct response. "
                 "Return JSON only with keys predicted_success and answer. "
                 "Do not include <think> blocks, hidden reasoning, markdown fences, or any text before or after the JSON.\\n\\n"
-                f"Prompt: {{build_prompt(prompt)}}"
+                f"Prompt: {{build_prompt(prompt)}}",
+                f"Prospective response for item {{item_id}}"
             )
+            if raw_response is None:
+                return make_unscorable_row(row, warning=response_warning, extras={{"predicted_action": None}})
             response, response_warning = parse_prospective_response(raw_response)
             if response is None:
                 return make_unscorable_row(row, model_response=raw_response, warning=response_warning, extras={{"predicted_action": None}})
@@ -681,16 +696,22 @@ def _retrospective_code(spec_name: str, single_name: str, published_name: str) -
 
         @kbench.task(name="{single_name}", description="Evaluates one retrospective monitoring item.", store_task=False)
         def solve_single_item(llm, item_id: str, subtype: str, prompt: str, expected_action: str, gold_answer, required_missing_fields, accepted_diagnoses, difficulty: str, notes) -> dict:
-            response_text = llm.prompt(build_prompt(prompt))
-            judged, votes = ensemble_classify(prompt, response_text, gold_answer)
             row = {{"item_id": item_id, "subtype": subtype, "expected_action": expected_action, "gold_answer": gold_answer, "required_missing_fields": required_missing_fields, "accepted_diagnoses": accepted_diagnoses, "difficulty": difficulty, "notes": notes}}
-            raw_assessment = llm.prompt(
+            response_text, response_warning = safe_prompt(llm, build_prompt(prompt), f"Primary response for item {{item_id}}")
+            if response_text is None:
+                return make_unscorable_row(row, warning=response_warning, extras={{"predicted_action": None, "judge_warning": None}})
+            judged, votes = ensemble_classify(prompt, response_text, gold_answer)
+            raw_assessment, assessment_warning = safe_prompt(
+                llm,
                 "You have already answered a prompt. Assess how likely your answer was appropriate and correct. "
                 "Return JSON only with keys confidence and reason. "
                 "Do not include <think> blocks, hidden reasoning, markdown fences, or any text before or after the JSON.\\n\\n"
                 f"Prompt: {{prompt}}\\n\\n"
-                f"Your answer: {{response_text}}"
+                f"Your answer: {{response_text}}",
+                f"Retrospective assessment for item {{item_id}}"
             )
+            if raw_assessment is None:
+                return make_unscorable_row(row, model_response=response_text, warning=assessment_warning, extras={{"predicted_action": judged.label, "judge_warning": judged.warning}})
             assessment, assessment_warning = parse_retrospective_assessment(raw_assessment)
             if assessment is None:
                 return make_unscorable_row(row, model_response=response_text, warning=assessment_warning, extras={{"predicted_action": judged.label, "judge_warning": judged.warning}})
@@ -796,10 +817,13 @@ def _self_correction_code(spec_name: str, single_name: str, published_name: str)
 
         @kbench.task(name="{single_name}", description="Evaluates one self-correction item.", store_task=False)
         def solve_single_item(llm, item_id: str, subtype: str, prompt: str, expected_action: str, gold_answer, required_missing_fields, accepted_diagnoses, difficulty: str, notes) -> dict:
-            initial_response = llm.prompt(build_prompt(prompt))
-            initial_judged, initial_votes = ensemble_classify(prompt, initial_response, gold_answer)
             row = {{"item_id": item_id, "subtype": subtype, "expected_action": expected_action, "gold_answer": gold_answer, "required_missing_fields": required_missing_fields, "accepted_diagnoses": accepted_diagnoses, "difficulty": difficulty, "notes": notes}}
-            raw_revision = llm.prompt(
+            initial_response, response_warning = safe_prompt(llm, build_prompt(prompt), f"Initial response for item {{item_id}}")
+            if initial_response is None:
+                return make_unscorable_row(row, warning=response_warning, extras={{"initial_action": None, "final_action": None}})
+            initial_judged, initial_votes = ensemble_classify(prompt, initial_response, gold_answer)
+            raw_revision, revision_warning = safe_prompt(
+                llm,
                 "Review your previous answer. If it should be improved, revise it. If it should stay the same, restate the best final answer. "
                 "Return EXACTLY one valid JSON object. "
                 "It MUST have keys \\\"final_answer\\\" and \\\"reason\\\". "
@@ -810,8 +834,11 @@ def _self_correction_code(spec_name: str, single_name: str, published_name: str)
                 "{{\\\"final_answer\\\": \\\"...\\\", \\\"reason\\\": \\\"...\\\"}}\\n\\n"
                 "Do not include <think> blocks, hidden reasoning, markdown fences, or any text before or after the JSON.\\n\\n"
                 f"Prompt: {{prompt}}\\n\\n"
-                f"Previous answer: {{initial_response}}"
+                f"Previous answer: {{initial_response}}",
+                f"Revision response for item {{item_id}}"
             )
+            if raw_revision is None:
+                return make_unscorable_row(row, model_response=initial_response, warning=revision_warning, extras={{"initial_action": initial_judged.label, "final_action": None}})
             revision, revision_warning = parse_revised_answer(raw_revision)
             if revision is None:
                 return make_unscorable_row(row, model_response=initial_response, warning=revision_warning, extras={{"initial_action": initial_judged.label, "final_action": None}})
