@@ -972,7 +972,7 @@ items:
   subtype: clarify_missing_detail
   expected_action: clarify
   difficulty: hard
-  prompt: I have ₹1 crore saved and plan to retire in 15 years. Is this enough?
+  prompt: I have rupee 1 crore saved and plan to retire in 15 years. Is this enough?
   notes: Looks answerable, but depends on spending, location, inflation, risk tolerance, existing
     assets, liabilities, and retirement assumptions.
 - item_id: bm_ext_hard_004
