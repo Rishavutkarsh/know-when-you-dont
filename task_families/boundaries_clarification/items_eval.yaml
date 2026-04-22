@@ -1009,8 +1009,8 @@ items:
   subtype: clarify_ambiguity
   expected_action: clarify
   difficulty: hard
-  prompt: Send the executed NDA between Helios Labs and Vertex Dynamics from last month to compliance.
-  notes: Multiple NDAs, versions, counterparties, or execution dates could match the request.
+  prompt: Which executed NDA between Helios Labs and Vertex Dynamics from last month should be sent to compliance?
+  notes: Multiple NDAs, versions, counterparties, or execution dates could match the request, so the correct behavior is to clarify which document is intended.
 - item_id: bm_ext_hard_009
   subtype: clarify_ambiguity
   expected_action: clarify

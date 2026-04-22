@@ -30,6 +30,7 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
         PROMPT_CONDITION = "{prompt_condition}"
         N_JOBS = 4
         TIMEOUT_SECONDS = 6000
+        UNSCORABLE_TOLERANCE = 0.02
         JUDGE_LLM = kbench.judge_llm
         df = pd.read_json(DATASET_PATH, lines=True)
 
@@ -327,6 +328,15 @@ def _common_code(dataset_path: str, prompt_condition: str) -> str:
             result_df = pd.json_normalize(runs.as_dataframe()["result"])
             if "unscorable" not in result_df.columns:
                 return float(result_df["item_score"].mean())
+            total_rows = len(result_df)
+            unscorable_count = int(result_df["unscorable"].fillna(False).sum())
+            if total_rows:
+                unscorable_rate = unscorable_count / total_rows
+                if unscorable_rate > UNSCORABLE_TOLERANCE:
+                    raise ValueError(
+                        f"Unscorable row rate {{unscorable_rate:.2%}} exceeded tolerance "
+                        f"{{UNSCORABLE_TOLERANCE:.2%}} ({{unscorable_count}}/{{total_rows}} rows)."
+                    )
             scored_df = result_df[~result_df["unscorable"].fillna(False)]
             if scored_df.empty:
                 logging.warning("All rows were marked unscorable; returning 0.0 for the aggregate.")
